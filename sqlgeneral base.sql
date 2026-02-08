@@ -124,6 +124,12 @@ CREATE TABLE public.stores (
   created_at timestamp with time zone DEFAULT now(),
   is_active boolean DEFAULT true,
   is_deleted boolean DEFAULT false,
-  CONSTRAINT stores_pkey PRIMARY KEY (id),
-  CONSTRAINT stores_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id)
+  CONSTRAINT stores_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.super_admins (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  username text NOT NULL UNIQUE,
+  badge_id text NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT super_admins_pkey PRIMARY KEY (id)
 );

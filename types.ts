@@ -54,6 +54,7 @@ export interface Category {
   icon_name?: string;
   color_class?: string;
   display_order?: number;
+  image_url?: string;
 }
 
 export interface DriverDocument {

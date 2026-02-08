@@ -30,12 +30,13 @@ interface AdminDashboardProps {
    onRestoreOrder: (orderId: string) => void;
    onDeletePermanently: (orderId: string) => void;
    onBanUser: (phone: string) => void;
-   onUpdateSettings: (settings: any) => void;
+   onUpdateSettings: (key: string, value: string) => void;
    onCreateAnnouncement: (ann: Partial<Announcement>) => void;
    onDeleteAnnouncement: (id: string) => void;
    onLogout: () => void;
    onBack: () => void;
    setStores: React.Dispatch<React.SetStateAction<Store[]>>;
+   categories: any[];
 }
 
 interface AdminUser extends UserProfile {
@@ -75,7 +76,7 @@ const renderMediaThumbnail = (data: string | null | undefined, size: string = "w
 };
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({
-   orders: propOrders, users, drivers, stores, announcements: propAnnouncements, supportNumber: propSupport,
+   orders: propOrders, users, drivers, stores, announcements: propAnnouncements, categories: propCategories, supportNumber: propSupport,
    onUpdateStatus, onAssignDriver, onArchiveOrder, onRestoreOrder, onDeletePermanently,
    onBanUser, onLogout, onBack, setStores
 }) => {
@@ -96,16 +97,36 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    const [dbAnnouncements, setDbAnnouncements] = useState<any[]>([]);
    const [dbCategories, setDbCategories] = useState<any[]>([]);
 
+   useEffect(() => {
+      if (propCategories && propCategories.length > 0) {
+         setDbCategories(propCategories);
+      }
+   }, [propCategories]);
+
    const handleManualRefresh = async () => {
       setIsRefreshing(true);
       await onBack(); // This triggers the parent to refresh data
       setTimeout(() => setIsRefreshing(false), 800);
    };
 
-   const localProducts = stores.flatMap(s => s.products || []);
+   const localProducts = stores.filter(s => !s.isDeleted).flatMap(s => s.products || []);
    const [supportNumber, setSupportNumber] = useState('+212 600 000 000');
 
-   // --- MODALS ---
+   const fetchData = async () => {
+      try {
+         const { data: annData } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
+         if (annData) setDbAnnouncements(annData);
+
+         const { data: catData } = await supabase.from('categories').select('*').order('display_order', { ascending: true });
+         if (catData) setDbCategories(catData);
+      } catch (err) {
+         console.error("Erreur fetchData:", err);
+      }
+   };
+
+   useEffect(() => {
+      fetchData();
+   }, []);
    const getWeeklyData = () => {
       const last7Days = Array.from({ length: 7 }, (_, i) => {
          const date = new Date();
@@ -156,6 +177,23 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    const [editingAnnouncement, setEditingAnnouncement] = useState<any | null>(null);
    const [showAddCategory, setShowAddCategory] = useState(false);
    const [editingCategory, setEditingCategory] = useState<any | null>(null);
+   const [categoryImagePreview, setCategoryImagePreview] = useState<string | null>(null);
+   useEffect(() => {
+      if (editingCategory) {
+         setCategoryImagePreview(editingCategory.image_url || null);
+      } else {
+         setCategoryImagePreview(null);
+      }
+   }, [editingCategory]);
+
+   const handleCategoryImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+         const reader = new FileReader();
+         reader.onloadend = () => setCategoryImagePreview(reader.result as string);
+         reader.readAsDataURL(file);
+      }
+   };
    const [storeImagePreview, setStoreImagePreview] = useState<string | null>(null);
    const [productImagePreview, setProductImagePreview] = useState<string | null>(null);
 
@@ -182,11 +220,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (editingAnnouncement) {
          const { error } = await supabase.from('announcements').update(annData).eq('id', editingAnnouncement.id);
          if (error) alert("Erreur: " + error.message);
-         else { setShowAddAnnouncement(false); setEditingAnnouncement(null); fetchData(); }
+         else { setShowAddAnnouncement(false); setEditingAnnouncement(null); fetchData(); onBack(); }
       } else {
          const { error } = await supabase.from('announcements').insert([annData]);
          if (error) alert("Erreur: " + error.message);
-         else { setShowAddAnnouncement(false); fetchData(); }
+         else { setShowAddAnnouncement(false); fetchData(); onBack(); }
       }
    };
 
@@ -195,26 +233,56 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const form = e.target as HTMLFormElement;
       const formData = new FormData(form);
 
-      const catData = {
-         id: formData.get('id') as string,
-         name_fr: formData.get('name_fr') as string,
-         name_ar: formData.get('name_ar') as string,
-         name_en: formData.get('name_en') as string,
-         icon_name: formData.get('icon_name') as string,
-         color_class: formData.get('color_class') as string,
-         display_order: parseInt(formData.get('display_order') as string) || 0
-      };
+      let categoryImageURL = editingCategory ? editingCategory.image_url : "";
 
-      if (editingCategory) {
-         const { error } = await supabase.from('categories').update(catData).eq('id', editingCategory.id);
-         if (error) alert("Erreur: " + error.message);
-         else { setShowAddCategory(false); setEditingCategory(null); fetchData(); }
-      } else {
-         const { error } = await supabase.from('categories').insert([catData]);
-         if (error) alert("Erreur: " + error.message);
-         else { setShowAddCategory(false); fetchData(); }
+      try {
+         if (categoryImagePreview && categoryImagePreview.startsWith('data:')) {
+            const blob = await dataUrlToBlob(categoryImagePreview);
+            const fileName = `category_${Date.now()}.png`;
+            const { data, error: uploadError } = await supabase.storage.from('stores').upload(fileName, blob); // Using 'stores' bucket as fallback if 'categories' doesn't exist
+            if (uploadError) {
+               alert(`Erreur upload catégorie : ${uploadError.message}`);
+               return;
+            }
+            if (data) {
+               categoryImageURL = supabase.storage.from('stores').getPublicUrl(fileName).data.publicUrl;
+            }
+         }
+
+         const catData: any = {
+            id: editingCategory ? editingCategory.id : (formData.get('id') as string),
+            name_fr: formData.get('name_fr') as string,
+            name_ar: formData.get('name_ar') as string,
+            name_en: formData.get('name_en') as string,
+            display_order: parseInt(formData.get('display_order') as string) || 0,
+            image_url: categoryImageURL
+         };
+
+         if (editingCategory) {
+            const { error } = await supabase.from('categories').update(catData).eq('id', editingCategory.id);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddCategory(false);
+               setEditingCategory(null);
+               setCategoryImagePreview(null);
+               fetchData();
+               onBack();
+            }
+         } else {
+            const { error } = await supabase.from('categories').insert([catData]);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddCategory(false);
+               setCategoryImagePreview(null);
+               fetchData();
+               onBack();
+            }
+         }
+      } catch (err) {
+         alert("Erreur lors de la création de la catégorie");
       }
    };
+
 
    const handleCreateProduct = async (e: React.FormEvent) => {
       e.preventDefault();
@@ -1153,9 +1221,9 @@ ${itemsText}
                                           {d.status === 'available' ? 'Disponible' : 'Occupé'}
                                        </span>
                                     </td>
-                                     <td className="px-8 py-5 font-bold">
-                                        {propOrders.filter(o => o.assignedDriverId === d.id && o.status === 'delivered').length}
-                                     </td>
+                                    <td className="px-8 py-5 font-bold">
+                                       {propOrders.filter(o => o.assignedDriverId === d.id && o.status === 'delivered').length}
+                                    </td>
                                     <td className="px-8 py-5">
                                        <div className="flex items-center gap-2">
                                           <button onClick={() => handleUpdateDriverWarns(d.id, Math.max(0, (d.warns || 0) - 1))} className="p-1 hover:bg-slate-100 rounded">-</button>
@@ -1187,7 +1255,7 @@ ${itemsText}
                         </button>
                      </div>
                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {stores.map(s => (
+                        {stores.filter(s => !s.isDeleted).map(s => (
                            <div key={s.id} className="bg-white p-6 rounded-[2.5rem] border shadow-sm space-y-4">
                               <div className="flex items-center gap-4">
                                  <img src={s.image_url || s.image || 'https://via.placeholder.com/100'} className="w-16 h-16 rounded-[1.25rem] object-cover" />
@@ -1302,7 +1370,15 @@ ${itemsText}
                            <tbody className="divide-y">
                               {dbCategories.map(cat => (
                                  <tr key={cat.id} className="hover:bg-slate-50 transition-colors">
-                                    <td className="px-8 py-5"><div className={`p-2 rounded-lg w-10 h-10 flex items-center justify-center ${cat.color_class || 'bg-slate-100'}`}>{cat.icon_name}</div></td>
+                                    <td className="px-8 py-5">
+                                       {cat.image_url ? (
+                                          <img src={cat.image_url} className="w-12 h-12 rounded-xl object-cover shadow-sm border border-slate-100" />
+                                       ) : (
+                                          <div className="w-12 h-12 bg-slate-100 rounded-xl flex items-center justify-center text-slate-300">
+                                             <ImageIcon size={20} />
+                                          </div>
+                                       )}
+                                    </td>
                                     <td className="px-8 py-5 font-bold">{cat.name_fr}</td>
                                     <td className="px-8 py-5 font-bold">{cat.name_ar}</td>
                                     <td className="px-8 py-5 font-black text-slate-400">{cat.display_order}</td>
@@ -1760,7 +1836,7 @@ ${itemsText}
                         <div className="space-y-1">
                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Magasin</label>
                            <select name="store_id" defaultValue={editingProduct?.store_id} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all">
-                              {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                              {stores.filter(s => !s.isDeleted).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                            </select>
                         </div>
                         <div className="space-y-1">
@@ -1821,7 +1897,7 @@ ${itemsText}
                            <div className="space-y-1">
                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Catégorie</label>
                               <select name="category_id" defaultValue={editingStore?.category_id} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all">
-                                 {dbCategories.map(c => <option key={c.id} value={c.id}>{c.name_fr}</option>)}
+                                 {(propCategories.length > 0 ? propCategories : dbCategories).map(c => <option key={c.id} value={c.id}>{c.name_fr}</option>)}
                               </select>
                            </div>
                         </div>
@@ -1911,15 +1987,24 @@ ${itemsText}
                               <input name="name_en" defaultValue={editingCategory?.name_en} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                            </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-4">
-                           <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Icône (Nom)</label>
-                              <input name="icon_name" defaultValue={editingCategory?.icon_name} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
-                           </div>
-                           <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Couleur CSS</label>
-                              <input name="color_class" defaultValue={editingCategory?.color_class} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
-                           </div>
+                        <div className="space-y-4">
+                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Image de la Catégorie</label>
+                           <label className="group relative flex flex-col items-center justify-center w-full h-48 border-4 border-dashed border-slate-100 rounded-[3rem] hover:border-orange-200 transition-all cursor-pointer overflow-hidden bg-slate-50/50">
+                              {categoryImagePreview ? (
+                                 <>
+                                    <img src={categoryImagePreview} className="w-full h-full object-cover" alt="Preview" />
+                                    <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                       <Camera className="text-white" size={32} />
+                                    </div>
+                                 </>
+                              ) : (
+                                 <div className="flex flex-col items-center gap-2">
+                                    <div className="p-4 bg-white rounded-2xl shadow-sm group-hover:scale-110 transition-transform"><Plus className="text-slate-400" /></div>
+                                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Choisir une image</p>
+                                 </div>
+                              )}
+                              <input type="file" accept="image/*" className="hidden" onChange={handleCategoryImageChange} />
+                           </label>
                         </div>
                         <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-[1.75rem] font-black uppercase text-xs tracking-widest shadow-xl transition-all active:scale-95">Valider la Catégorie</button>
                      </form>

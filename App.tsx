@@ -125,7 +125,7 @@ export default function App() {
     if (usersRes.error) console.error("Error fetching users:", usersRes.error);
     if (productsRes.error) console.error("Error fetching products:", productsRes.error);
 
-    if (catsRes.data) setCategories(catsRes.data);
+    setCategories(catsRes.data || []);
     if (driversRes.data) {
       setDrivers(driversRes.data.map((d: any) => ({
         ...d,
@@ -149,6 +149,9 @@ export default function App() {
         image: s.image_url,
         description: s.description,
         menuImage: s.menu_image_url,
+        isDeleted: s.is_deleted || false,
+        is_active: s.is_active,
+        is_open: s.is_open,
         products: productsRes.data
           .filter((p: any) => p.store_id === s.id)
           .map((p: any) => ({
@@ -158,7 +161,7 @@ export default function App() {
             image: p.image_url,
             description: p.description,
             storeName: s.name
-          }))
+          })),
       }));
       setStores(mappedStores);
     }
@@ -351,6 +354,7 @@ export default function App() {
 
   const addToCart = (product: Product) => {
     setCart(prev => {
+      const localProducts = stores.filter(s => !s.is_deleted).flatMap(s => s.products || []);
       const existing = prev.find(i => i.product?.id === product.id);
       if (existing) {
         return prev.map(i => i.product?.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
@@ -371,6 +375,7 @@ export default function App() {
       drivers={drivers}
       stores={stores}
       announcements={announcements}
+      categories={categories}
       supportNumber={supportNumber}
       onUpdateStatus={handleUpdateOrderStatus}
       onAssignDriver={handleAssignDriver}

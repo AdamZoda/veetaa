@@ -22,11 +22,15 @@ const Home: React.FC<HomeProps> = ({ onSelectCategory, favorites, onToggleFavori
   const containerRef = useRef<HTMLDivElement>(null);
   const t = (key: string) => TRANSLATIONS[language][key] || key;
 
+  const activeStores = useMemo(() => {
+    return stores.filter(s => !s.isDeleted && s.is_active !== false);
+  }, [stores]);
+
   const allProducts = useMemo(() => {
-    return stores.flatMap(store =>
+    return activeStores.flatMap(store =>
       (store.products || []).map(p => ({ ...p, storeName: store.name, storeId: store.id, category: store.category }))
     );
-  }, [stores]);
+  }, [activeStores]);
 
   const displayBanners = useMemo(() => {
     if (announcements && announcements.length > 0) {
@@ -94,8 +98,14 @@ const Home: React.FC<HomeProps> = ({ onSelectCategory, favorites, onToggleFavori
               onClick={() => onSelectCategory(cat.id as CategoryID)}
               className="flex flex-col items-center gap-2 group min-w-[68px]"
             >
-              <div className={`${cat.color_class || 'bg-orange-500'} w-[68px] h-[68px] rounded-[1.75rem] flex items-center justify-center text-white shadow-lg shadow-slate-100 transition-transform active:scale-90 group-hover:scale-105`}>
-                <span className="text-2xl">{cat.icon_name}</span>
+              <div className="w-[68px] h-[68px] rounded-[1.75rem] flex items-center justify-center bg-white shadow-lg shadow-slate-100 transition-transform active:scale-90 group-hover:scale-105 border border-slate-50 overflow-hidden">
+                {cat.image_url ? (
+                  <img src={cat.image_url} className="w-full h-full object-cover" alt={cat.name_fr} />
+                ) : (
+                  <div className={`w-full h-full flex items-center justify-center text-white ${cat.color_class || 'bg-orange-500'}`}>
+                    <span className="text-2xl">{cat.icon_name || '📦'}</span>
+                  </div>
+                )}
               </div>
               <span className="text-[10px] font-black text-slate-600 text-center leading-tight whitespace-nowrap">
                 {language === 'ar' ? cat.name_ar : (language === 'en' ? cat.name_en : cat.name_fr)}
@@ -142,7 +152,7 @@ const Home: React.FC<HomeProps> = ({ onSelectCategory, favorites, onToggleFavori
             </div>
 
             <div className="flex gap-4 overflow-x-auto no-scrollbar pb-1 -mx-4 px-4 md:grid md:grid-cols-2 lg:grid-cols-3 md:overflow-visible">
-              {stores.slice(0, 6).map((store) => (
+              {activeStores.slice(0, 6).map((store) => (
                 <div key={store.id} onClick={() => onSelectCategory(store.category)} className="min-w-[240px] md:min-w-0 bg-white rounded-[2rem] border border-slate-50 overflow-hidden shadow-md relative group active:scale-[0.98] hover:shadow-2xl transition-all cursor-pointer">
                   <button
                     onClick={(e) => { e.stopPropagation(); onToggleFavorite(store.id); }}
