@@ -1,27 +1,38 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, useCallback } from 'react';
 import { View, CategoryID, Store, CartItem, Order, Product, UserProfile, OrderStatus, Language, Driver, Announcement, RIB, SupportInfo } from './types';
 import { CATEGORIES, MOCK_STORES, TRANSLATIONS } from './constants';
 import { supabase } from './lib/supabase';
-import Welcome from './views/Welcome';
-import Home from './views/Home';
-import CategoryDetail from './views/CategoryDetail';
-import Checkout from './views/Checkout';
-import Confirmation from './views/Confirmation';
-import Login from './views/Login';
-import Signup from './views/Signup';
-import OtpVerification from './views/OtpVerification';
-import PermissionsRequest from './views/PermissionsRequest';
-import Favorites from './views/Favorites';
-import Settings from './views/Settings';
-import Tracking from './views/Tracking';
-import History from './views/History';
-import Help from './views/Help';
-import ProductOrderView from './views/ProductOrderView';
-import AdminDashboard from './views/AdminDashboard';
-import StoreDetail from './views/StoreDetail';
-import AdminLogin from './views/AdminLogin';
-import { ShoppingCart, User, ArrowLeft, Heart, MapPin, ChevronDown, ChevronUp, Phone, Bell, ShieldCheck } from 'lucide-react';
+import { ShoppingCart, User, ArrowLeft, Heart, MapPin, ChevronDown, ChevronUp, Phone, Bell, ShieldCheck, Loader2 } from 'lucide-react';
+
+// Lazy loading des vues pour optimiser les performances
+const Welcome = React.lazy(() => import('./views/Welcome'));
+const Home = React.lazy(() => import('./views/Home'));
+const CategoryDetail = React.lazy(() => import('./views/CategoryDetail'));
+const Checkout = React.lazy(() => import('./views/Checkout'));
+const Confirmation = React.lazy(() => import('./views/Confirmation'));
+const Login = React.lazy(() => import('./views/Login'));
+const Signup = React.lazy(() => import('./views/Signup'));
+const OtpVerification = React.lazy(() => import('./views/OtpVerification'));
+const PermissionsRequest = React.lazy(() => import('./views/PermissionsRequest'));
+const Favorites = React.lazy(() => import('./views/Favorites'));
+const Settings = React.lazy(() => import('./views/Settings'));
+const Tracking = React.lazy(() => import('./views/Tracking'));
+const History = React.lazy(() => import('./views/History'));
+const Help = React.lazy(() => import('./views/Help'));
+const ProductOrderView = React.lazy(() => import('./views/ProductOrderView'));
+const AdminDashboard = React.lazy(() => import('./views/AdminDashboard'));
+const StoreDetail = React.lazy(() => import('./views/StoreDetail'));
+const AdminLogin = React.lazy(() => import('./views/AdminLogin'));
+
+const LoadingScreen = () => (
+  <div className="flex flex-col items-center justify-center min-h-screen bg-white">
+    <div className="animate-spin text-orange-500">
+      <Loader2 size={48} />
+    </div>
+    <p className="mt-4 text-slate-400 font-medium">Chargement...</p>
+  </div>
+);
 
 export default function App() {
   const [view, setView] = useState<View>('ADMIN_PANEL');
@@ -156,7 +167,7 @@ export default function App() {
         image: s.image_url,
         description: s.description,
         menuImage: s.menu_image_url,
-        isDeleted: s.is_deleted || false,
+        is_deleted: s.is_deleted || false,
         is_active: s.is_active,
         is_open: s.is_open,
         products: productsRes.data
@@ -269,7 +280,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
+  const handleUpdateOrderStatus = useCallback(async (orderId: string, status: OrderStatus) => {
     try {
       const { data: res } = await supabase.from('orders').select('status_history').eq('id', parseInt(orderId));
       const dbOrder = res?.[0];
@@ -284,9 +295,9 @@ export default function App() {
     } catch (err) {
       console.error("Erreur statut:", err);
     }
-  };
+  }, []);
 
-  const handleArchiveOrder = async (orderId: string) => {
+  const handleArchiveOrder = useCallback(async (orderId: string) => {
     const { error } = await supabase.from('orders').update({ is_archived: true }).eq('id', parseInt(orderId));
     if (error) {
       console.error("Archive Error:", error);
@@ -296,9 +307,9 @@ export default function App() {
     console.log("Archive success for:", orderId);
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, isArchived: true } : o));
     showNotification("Archivée", `Commande #${orderId} a été déplacée vers l'historique.`);
-  };
+  }, []);
 
-  const handleRestoreOrder = async (orderId: string) => {
+  const handleRestoreOrder = useCallback(async (orderId: string) => {
     const { error } = await supabase.from('orders').update({ is_archived: false }).eq('id', parseInt(orderId));
     if (error) {
       console.error("Restore Error:", error);
@@ -307,9 +318,9 @@ export default function App() {
     }
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, isArchived: false } : o));
     showNotification("Restaurée", `Commande #${orderId} a été restaurée.`);
-  };
+  }, []);
 
-  const handlePermanentDeleteOrder = async (orderId: string) => {
+  const handlePermanentDeleteOrder = useCallback(async (orderId: string) => {
     const { error } = await supabase.from('orders').delete().eq('id', parseInt(orderId));
     if (error) {
       console.error("Delete Error:", error);
@@ -318,22 +329,22 @@ export default function App() {
     }
     setOrders(prev => prev.filter(o => o.id !== orderId));
     showNotification("Supprimée Définitivement", `Commande #${orderId} a été supprimée.`);
-  };
+  }, []);
 
-  const handleBanUser = async (phone: string) => {
+  const handleBanUser = useCallback(async (phone: string) => {
     await supabase.from('profiles').update({ is_blocked: true }).eq('phone', phone);
     setUsers(prev => prev.map(u => u.phone === phone ? { ...u, isBlocked: true } : u));
     showNotification("Utilisateur Banni", `L'utilisateur avec le numéro ${phone} a été banni.`);
-  };
+  }, []);
 
 
-  const handleAssignDriver = async (orderId: string, driverId: string) => {
+  const handleAssignDriver = useCallback(async (orderId: string, driverId: string) => {
     await supabase.from('orders').update({ assigned_driver_id: driverId }).eq('id', parseInt(orderId));
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, assignedDriverId: driverId } : o));
     showNotification("Livreur Assigné", `Livreur ID ${driverId} s'occupe de la commande.`);
-  };
+  }, []);
 
-  const handleUpdateSettings = async (key: string, value: string) => {
+  const handleUpdateSettings = useCallback(async (key: string, value: string) => {
     const { error } = await supabase.from('settings').upsert({ key, value, updated_at: new Date().toISOString() });
     if (error) {
       showNotification("Erreur", "Impossible d'enregistrer les réglages.");
@@ -342,19 +353,19 @@ export default function App() {
       if (key === 'support_number') setSupportNumber(value);
       showNotification("Réglages Enregistrés", "Les paramètres système ont été mis à jour.");
     }
-  };
+  }, []);
 
-  const handleCreateAnnouncement = async (ann: Partial<Announcement>) => {
+  const handleCreateAnnouncement = useCallback(async (ann: Partial<Announcement>) => {
     const { data, error } = await supabase.from('announcements').insert([ann]).select();
     if (error) {
       showNotification("Erreur", "Impossible de créer l'annonce.");
     } else if (data) {
-      setAnnouncements([data[0], ...announcements]);
+      setAnnouncements(prev => [data[0], ...prev]);
       showNotification("Annonce Créée", "La nouvelle bannière est en ligne.");
     }
-  };
+  }, []);
 
-  const handleDeleteAnnouncement = async (id: string) => {
+  const handleDeleteAnnouncement = useCallback(async (id: string) => {
     const { error } = await supabase.from('announcements').delete().eq('id', id);
     if (error) {
       showNotification("Erreur", "Impossible de supprimer l'annonce.");
@@ -362,7 +373,7 @@ export default function App() {
       setAnnouncements(prev => prev.filter(a => a.id !== id));
       showNotification("Annonce Supprimée", "La bannière a été retirée.");
     }
-  };
+  }, []);
 
 
   const handleSkipLogin = () => {
@@ -393,31 +404,37 @@ export default function App() {
   };
 
   if (view === 'ADMIN_PANEL' && !isAdminLogged) {
-    return <AdminLogin onLoginSuccess={() => setIsAdminLogged(true)} />;
+    return (
+      <Suspense fallback={<LoadingScreen />}>
+        <AdminLogin onLoginSuccess={() => setIsAdminLogged(true)} />
+      </Suspense>
+    );
   }
 
   return (
-    <AdminDashboard
-      orders={orders}
-      users={users}
-      drivers={drivers}
-      stores={stores}
-      announcements={announcements}
-      categories={categories}
-      supportNumber={supportNumber}
-      onUpdateStatus={handleUpdateOrderStatus}
-      onAssignDriver={handleAssignDriver}
-      onArchiveOrder={handleArchiveOrder}
-      onRestoreOrder={handleRestoreOrder}
-      onDeletePermanently={handlePermanentDeleteOrder}
-      onBanUser={handleBanUser}
-      onUpdateSettings={handleUpdateSettings}
-      onCreateAnnouncement={handleCreateAnnouncement}
-      onDeleteAnnouncement={handleDeleteAnnouncement}
-      onLogout={handleLogout}
-      onBack={fetchData}
-      setStores={setStores}
-      pageVisibility={pageVisibility}
-    />
+    <Suspense fallback={<LoadingScreen />}>
+      <AdminDashboard
+        orders={orders}
+        users={users}
+        drivers={drivers}
+        stores={stores}
+        announcements={announcements}
+        categories={categories}
+        supportNumber={supportNumber}
+        onUpdateStatus={handleUpdateOrderStatus}
+        onAssignDriver={handleAssignDriver}
+        onArchiveOrder={handleArchiveOrder}
+        onRestoreOrder={handleRestoreOrder}
+        onDeletePermanently={handlePermanentDeleteOrder}
+        onBanUser={handleBanUser}
+        onUpdateSettings={handleUpdateSettings}
+        onCreateAnnouncement={handleCreateAnnouncement}
+        onDeleteAnnouncement={handleDeleteAnnouncement}
+        onLogout={handleLogout}
+        onBack={fetchData}
+        setStores={setStores}
+        pageVisibility={pageVisibility}
+      />
+    </Suspense>
   );
 }

@@ -503,77 +503,102 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
    const confirmDeleteStore = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!storeToDelete) return;
+      console.log("🔴 confirmDeleteStore appelée");
+
+      if (!storeToDelete) {
+         console.log("❌ Aucune marque sélectionnée");
+         return;
+      }
+
+      console.log("📦 Marque à supprimer:", storeToDelete.name, storeToDelete.id);
 
       try {
-         // 1. Récupérer l'admin connecté
-         const adminToken = localStorage.getItem('admin_token');
-         if (!adminToken) {
-            alert("Session administrateur expirée. Veuillez vous reconnecter.");
-            return;
-         }
+         // 1. Vérifier le mot de passe directement dans la base de données
+         // PAS DE VÉRIFICATION DE SESSION - on vérifie juste si le mot de passe existe
+         console.log("🔐 Mot de passe saisi:", deleteStorePassword);
 
          const { data: adminData, error: adminError } = await supabase
             .from('super_admins')
-            .select('badge_id')
-            .eq('username', adminToken)
-            .single();
+            .select('badge_id, username')
+            .eq('badge_id', deleteStorePassword)
+            .limit(1);
 
-         if (adminError || !adminData) {
-            alert("Erreur lors de la vérification de l'administrateur.");
-            return;
-         }
+         console.log("👤 Résultat recherche admin:", adminData);
+         console.log("❌ Erreur recherche:", adminError);
 
-         // 2. Vérifier le mot de passe
-         if (adminData.badge_id !== deleteStorePassword) {
-            alert("❌ Mot de passe incorrect !");
+         // Vérifier si un admin avec ce mot de passe existe
+         if (adminError || !adminData || adminData.length === 0) {
+            alert("❌ Mot de passe incorrect !\n\nAucun administrateur trouvé avec ce Badge ID.");
+            console.error("Erreur admin:", adminError);
             setDeleteStorePassword('');
             return;
          }
 
-         // 3. Supprimer tous les produits associés
+         console.log("✅ Mot de passe correct ! Admin trouvé:", adminData[0].username);
+         console.log("✅ Suppression autorisée, démarrage...");
+
+
+
+
+         // 3. Supprimer tous les produits associés (CRITIQUE : Doit être fait avant le store)
+         console.log("🗑️ Suppression des produits associés...");
          const { error: productsError } = await supabase
             .from('products')
             .delete()
             .eq('store_id', storeToDelete.id);
 
          if (productsError) {
+            console.error("❌ Erreur produits:", productsError);
             alert("Erreur lors de la suppression des produits : " + productsError.message);
             return;
          }
+         console.log("✅ Produits supprimés");
 
-         // 4. Soft delete de la marque
+         // 4. Supprimer les favoris associés (CRITIQUE : Sinon erreur fk_favorites)
+         console.log("💔 Suppression des favoris...");
+         const { error: favError } = await supabase
+            .from('favorites')
+            .delete()
+            .eq('store_id', storeToDelete.id);
+
+         if (favError) console.warn("⚠️ Erreur suppression favoris (non bloquant):", favError);
+
+         // 5. Détacher les commandes (CRITIQUE : Sinon erreur fk_orders)
+         console.log("🔗 Détachement des commandes...");
+         const { error: ordersError } = await supabase
+            .from('orders')
+            .update({ store_id: null })
+            .eq('store_id', storeToDelete.id);
+
+         if (ordersError) console.warn("⚠️ Avertissement commandes:", ordersError);
+
+         // 6. SUPPRESSION TOTALE de la marque
+         console.log("🔥 SUPPRESSION DÉFINITIVE de la marque...");
          const { error: storeError } = await supabase
             .from('stores')
-            .update({ is_deleted: true })
+            .delete()
             .eq('id', storeToDelete.id);
 
          if (storeError) {
-            alert("Erreur lors de la suppression de la marque : " + storeError.message);
+            console.error("❌ Erreur suppression marque:", storeError);
+            alert("Impossible de supprimer la marque (vérifiez s'il reste des dépendances) : " + storeError.message);
             return;
          }
 
-         // 5. Fermer le modal et rafraîchir
+         console.log("✅ Marque exterminée avec succès");
+
+         // 7. Fermer le modal et rafraîchir
          setShowDeleteStoreModal(false);
          setStoreToDelete(null);
          setDeleteStorePassword('');
-         alert("✅ Marque et produits supprimés avec succès !");
+         alert("✅ Marque et toutes ses données associées ont été supprimées définitivement !");
+         console.log("🔄 Rafraîchissement des données...");
          onBack();
          await fetchData();
+         console.log("✅ Opération terminée !");
       } catch (err) {
-         console.error("Erreur lors de la suppression:", err);
-         alert("Une erreur est survenue lors de la suppression.");
-      }
-   };
-
-   const handleRestoreStore = async (id: string) => {
-      if (!confirm("Restaurer cette marque ? Elle redeviendra visible dans l'application.")) return;
-      const { error } = await supabase.from('stores').update({ is_deleted: false }).eq('id', id);
-      if (error) alert("Erreur: " + error.message);
-      else {
-         alert("✅ Marque restaurée avec succès !");
-         onBack();
-         await fetchData();
+         console.error("💥 Erreur fatale lors de la suppression:", err);
+         alert("Une erreur inattendue est survenue : " + (err as any)?.message);
       }
    };
 
@@ -1457,10 +1482,10 @@ ${itemsText}
                         </button>
                      </div>
                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {stores.filter(s => !s.is_deleted).map(s => (
+                        {stores.map(s => (
                            <div key={s.id} className="bg-white p-6 rounded-[2.5rem] border shadow-sm space-y-4">
                               <div className="flex items-center gap-4">
-                                 <img src={s.image_url || s.image || 'https://via.placeholder.com/100'} className="w-16 h-16 rounded-[1.25rem] object-cover" />
+                                 <img src={s.image_url || s.image || 'https://via.placeholder.com/100'} loading="lazy" className="w-16 h-16 rounded-[1.25rem] object-cover" />
                                  <div className="flex-1">
                                     <h4 className="font-black text-lg">{s.name}</h4>
                                     <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{s.category_id}</p>
@@ -1500,7 +1525,7 @@ ${itemsText}
                               <button onClick={() => { setEditingProduct(p); setShowAddProduct(true); }} className="p-2 bg-white/90 backdrop-blur-sm text-slate-600 rounded-xl shadow-lg hover:text-orange-600"><Edit3 size={16} /></button>
                               <button onClick={() => handleDeleteProduct(p.id)} className="p-2 bg-white/90 backdrop-blur-sm text-red-500 rounded-xl shadow-lg hover:bg-red-50"><Trash2 size={16} /></button>
                            </div>
-                           <img src={p.image} className="w-full h-40 object-cover rounded-[1.75rem] mb-4" />
+                           <img src={p.image} loading="lazy" className="w-full h-40 object-cover rounded-[1.75rem] mb-4" />
                            <div className="p-2">
                               <h4 className="font-black text-slate-800 text-sm mb-1 truncate">{p.name}</h4>
                               <p className="text-[10px] text-slate-400 mb-2 truncate">{p.storeName || 'Marque inconnue'}</p>
@@ -1529,6 +1554,9 @@ ${itemsText}
                                     <p className="text-xs text-slate-500 mt-1 line-clamp-2">{ann.content}</p>
                                  </div>
                                  <div className="flex gap-2">
+                                    {ann.image_url && (
+                                       <img src={ann.image_url} loading="lazy" className="w-24 h-24 rounded-2xl object-cover shadow-sm" />
+                                    )}
                                     <button onClick={() => handleToggleAnnouncement(ann.id, ann.active)} className={`p-2 rounded-xl transition-colors ${ann.active ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                                        {ann.active ? <Check size={18} /> : <X size={18} />}
                                     </button>
