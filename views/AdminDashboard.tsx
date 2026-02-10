@@ -218,6 +218,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    };
    const [storeImagePreview, setStoreImagePreview] = useState<string | null>(null);
    const [productImagePreview, setProductImagePreview] = useState<string | null>(null);
+   const [announcementImagePreview, setAnnouncementImagePreview] = useState<string | null>(null);
+
+   useEffect(() => {
+      if (editingAnnouncement) {
+         setAnnouncementImagePreview(editingAnnouncement.images?.[0] || editingAnnouncement.image_url || null);
+      } else {
+         setAnnouncementImagePreview(null);
+      }
+   }, [editingAnnouncement]);
 
    // --- LOGO (pour les PDF) ---
    const logo = "LOGO.png"; // Sera géré par le chemin relatif ou base64
@@ -233,20 +242,52 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const form = e.target as HTMLFormElement;
       const formData = new FormData(form);
 
-      const annData = {
-         title: formData.get('title') as string,
-         content: formData.get('content') as string,
-         active: true
-      };
+      let imageUrls = editingAnnouncement?.images || [];
 
-      if (editingAnnouncement) {
-         const { error } = await supabase.from('announcements').update(annData).eq('id', editingAnnouncement.id);
-         if (error) alert("Erreur: " + error.message);
-         else { setShowAddAnnouncement(false); setEditingAnnouncement(null); fetchData(); onBack(); }
-      } else {
-         const { error } = await supabase.from('announcements').insert([annData]);
-         if (error) alert("Erreur: " + error.message);
-         else { setShowAddAnnouncement(false); fetchData(); onBack(); }
+      try {
+         if (announcementImagePreview && announcementImagePreview.startsWith('data:')) {
+            const blob = await dataUrlToBlob(announcementImagePreview);
+            const fileName = `ann_${Date.now()}.png`;
+            const { data, error: uploadError } = await supabase.storage.from('stores').upload(fileName, blob);
+            if (uploadError) {
+               alert(`Erreur upload annonce : ${uploadError.message}`);
+               return;
+            }
+            if (data) {
+               const publicUrl = supabase.storage.from('stores').getPublicUrl(fileName).data.publicUrl;
+               imageUrls = [publicUrl];
+            }
+         }
+
+         const annData = {
+            title: formData.get('title') as string,
+            content: formData.get('content') as string,
+            active: formData.get('active') === 'on',
+            images: imageUrls
+         };
+
+         if (editingAnnouncement) {
+            const { error } = await supabase.from('announcements').update(annData).eq('id', editingAnnouncement.id);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddAnnouncement(false);
+               setEditingAnnouncement(null);
+               setAnnouncementImagePreview(null);
+               fetchData();
+               onBack();
+            }
+         } else {
+            const { error } = await supabase.from('announcements').insert([annData]);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddAnnouncement(false);
+               setAnnouncementImagePreview(null);
+               fetchData();
+               onBack();
+            }
+         }
+      } catch (err) {
+         alert("Erreur lors de la création de l'annonce");
       }
    };
 
@@ -685,7 +726,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const formData = new FormData(form);
       const ribData = {
          label: formData.get('label') as string,
-         rib: formData.get('rib') as string
+         rib: formData.get('rib') as string,
+         full_name: formData.get('full_name') as string
       };
 
       if (editingRIB) {
@@ -748,7 +790,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             maps_url: formData.get('maps_url') as string,
             image_url: storeImageURL,
             is_active: true,
-            is_open: true
+            is_open: true,
+            is_featured: formData.get('is_featured') === 'on',
+            has_products: formData.get('has_products') === 'on',
+            description: formData.get('description') as string
          };
 
          if (editingStore) {
@@ -864,6 +909,26 @@ ${itemsText}
       }
 
       doc.text(`Paiement: ${order.paymentMethod === 'cash' ? 'Espèces' : 'Virement'}`, 25, 86);
+
+      // Colonne Droite: MAGASIN
+      doc.setFontSize(11);
+      doc.setTextColor(blueColor);
+      doc.text("INFORMATIONS MAGASIN", 110, 55);
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark);
+      doc.text(`Magasin: ${order.storeName || 'Non spécifié'}`, 110, 65);
+
+      const storeObj = stores.find(s => s.name === order.storeName);
+      if (storeObj && (storeObj.maps_url || storeObj.mapsUrl)) {
+         const sUrl = storeObj.maps_url || storeObj.mapsUrl || '';
+         doc.text(`Localisation: `, 110, 72);
+         doc.setTextColor('#3b82f6');
+         doc.textWithLink('Lien Google Maps', 140, 72, { url: sUrl });
+         doc.setTextColor(slateDark);
+      } else {
+         doc.text(`Localisation: Non spécifiée`, 110, 72);
+      }
+
       if (order.rib) {
          doc.setFontSize(8);
          doc.text(`RIB: ${order.rib}`, 25, 91);
@@ -1477,7 +1542,7 @@ ${itemsText}
                   <div className="space-y-6">
                      <div className="flex justify-between items-center">
                         <h3 className="text-xl font-black uppercase">Partenaires & Marques</h3>
-                        <button onClick={() => { setEditingStore(null); setShowAddPartner(true); }} className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600">
+                        <button onClick={() => { setEditingStore(null); setStoreImagePreview(null); setShowAddPartner(true); }} className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600">
                            <Plus size={16} /> Nouveau Partenaire
                         </button>
                      </div>
@@ -1485,7 +1550,7 @@ ${itemsText}
                         {stores.map(s => (
                            <div key={s.id} className="bg-white p-6 rounded-[2.5rem] border shadow-sm space-y-4">
                               <div className="flex items-center gap-4">
-                                 <img src={s.image_url || s.image || 'https://via.placeholder.com/100'} loading="lazy" className="w-16 h-16 rounded-[1.25rem] object-cover" />
+                                 <img src={s.image_url || s.image || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect fill='%23e2e8f0' width='100' height='100'/%3E%3C/svg%3E"} loading="lazy" className="w-16 h-16 rounded-[1.25rem] object-cover" />
                                  <div className="flex-1">
                                     <h4 className="font-black text-lg">{s.name}</h4>
                                     <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{s.category_id}</p>
@@ -1502,7 +1567,7 @@ ${itemsText}
                               <div className="flex justify-between items-center pt-4 border-t">
                                  <div className="flex items-center gap-1 text-orange-500"><Star size={14} fill="currentColor" /><span className="text-xs font-black">{s.rating || '4.5'}</span></div>
                                  <div className="flex gap-2">
-                                    <button onClick={() => { setEditingStore(s); setShowAddPartner(true); }} className="p-2 bg-slate-100 rounded-lg"><Edit3 size={16} /></button>
+                                    <button onClick={() => { setEditingStore(s); setStoreImagePreview(null); setShowAddPartner(true); }} className="p-2 bg-slate-100 rounded-lg"><Edit3 size={16} /></button>
                                     <button onClick={() => handleDeleteStore(s)} className="p-2 bg-red-50 text-red-500 rounded-lg"><Trash2 size={16} /></button>
                                  </div>
                               </div>
@@ -1554,8 +1619,8 @@ ${itemsText}
                                     <p className="text-xs text-slate-500 mt-1 line-clamp-2">{ann.content}</p>
                                  </div>
                                  <div className="flex gap-2">
-                                    {ann.image_url && (
-                                       <img src={ann.image_url} loading="lazy" className="w-24 h-24 rounded-2xl object-cover shadow-sm" />
+                                    {(ann.images?.[0] || ann.image_url) && (
+                                       <img src={ann.images?.[0] || ann.image_url} loading="lazy" className="w-24 h-24 rounded-2xl object-cover shadow-sm" />
                                     )}
                                     <button onClick={() => handleToggleAnnouncement(ann.id, ann.active)} className={`p-2 rounded-xl transition-colors ${ann.active ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                                        {ann.active ? <Check size={18} /> : <X size={18} />}
@@ -1671,6 +1736,7 @@ ${itemsText}
                                     <div key={r.id} className="flex items-center justify-between p-6 bg-slate-50 rounded-3xl border border-slate-100 group">
                                        <div className="flex flex-col gap-1">
                                           <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{r.label}</span>
+                                          <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest">• {r.full_name}</span>
                                           <span className="font-bold text-slate-700 tracking-wider">{r.rib}</span>
                                        </div>
                                        <div className="flex gap-2">
@@ -1681,6 +1747,68 @@ ${itemsText}
                                  ))
                               )}
                            </div>
+                        </div>
+                     </div>
+
+                     {/* SALES MANAGEMENT (GESTION DES SOLDES) */}
+                     <div className="bg-white rounded-[3rem] border p-10 shadow-sm space-y-8 lg:col-span-2">
+                        <div className="flex items-center justify-between">
+                           <div className="flex items-center gap-3">
+                              <div className="p-3 bg-orange-50 text-orange-600 rounded-2xl"><Megaphone size={20} /></div>
+                              <h3 className="font-black text-slate-800 uppercase text-xs tracking-[0.2em]">Gestion des Soldes & Annonces</h3>
+                           </div>
+                           <button onClick={() => { setEditingAnnouncement(null); setShowAddAnnouncement(true); }} className="flex items-center gap-2 bg-slate-900 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition-all">
+                              <Plus size={16} /> Nouvelle Campagne
+                           </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                           {dbAnnouncements.length === 0 ? (
+                              <div className="col-span-full text-center py-20 bg-slate-50 rounded-[2.5rem] border-2 border-dashed border-slate-100">
+                                 <Megaphone size={40} className="text-slate-200 mx-auto mb-4" />
+                                 <p className="text-xs font-bold text-slate-400">Aucune campagne de soldes active</p>
+                              </div>
+                           ) : (
+                              dbAnnouncements.map(ann => (
+                                 <div key={ann.id} className="group bg-slate-50 rounded-[2rem] p-6 border border-slate-100 hover:border-orange-200 transition-all flex flex-col gap-4">
+                                    <div className="flex items-start gap-4">
+                                       <div className="w-16 h-16 rounded-2xl overflow-hidden flex-shrink-0 shadow-sm">
+                                          {ann.images?.[0] || ann.image_url ? (
+                                             <img src={ann.images?.[0] || ann.image_url} className="w-full h-full object-cover" />
+                                          ) : (
+                                             <div className="w-full h-full bg-slate-200 flex items-center justify-center text-slate-400">
+                                                <ImageIcon size={20} />
+                                             </div>
+                                          )}
+                                       </div>
+                                       <div className="flex-1 min-w-0">
+                                          <div className="flex justify-between items-start mb-1">
+                                             <h4 className="font-black text-slate-800 text-xs truncate uppercase tracking-tight">{ann.title}</h4>
+                                             <div className="bauble_box scale-50 origin-right -mt-2">
+                                                <input
+                                                   className="bauble_input"
+                                                   id={`config_ann_switch_${ann.id}`}
+                                                   type="checkbox"
+                                                   checked={ann.active}
+                                                   onChange={() => handleToggleAnnouncement(ann.id, ann.active)}
+                                                />
+                                                <label className="bauble_label" htmlFor={`config_ann_switch_${ann.id}`}>Toggle</label>
+                                             </div>
+                                          </div>
+                                          <p className="text-[10px] text-slate-500 font-bold leading-relaxed line-clamp-2 italic">"{ann.content}"</p>
+                                       </div>
+                                    </div>
+                                    <div className="flex items-center gap-4 pt-2 border-t border-slate-200/50">
+                                       <button onClick={() => { setEditingAnnouncement(ann); setShowAddAnnouncement(true); }} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-orange-600 flex items-center gap-1 transition-colors">
+                                          <Edit3 size={12} /> Modifier
+                                       </button>
+                                       <button onClick={() => handleDeleteAnnouncement(ann.id)} className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-red-500 flex items-center gap-1 transition-colors">
+                                          <Trash2 size={12} /> Supprimer
+                                       </button>
+                                    </div>
+                                 </div>
+                              ))
+                           )}
                         </div>
                      </div>
 
@@ -1717,7 +1845,7 @@ ${itemsText}
                         {/* Informations sur la marque */}
                         <div className="bg-slate-50 p-6 rounded-2xl border-l-4 border-red-500 space-y-3">
                            <div className="flex items-center gap-3">
-                              <img src={storeToDelete.image_url || storeToDelete.image || 'https://via.placeholder.com/60'} className="w-14 h-14 rounded-xl object-cover border-2 border-red-200" />
+                              <img src={storeToDelete.image_url || storeToDelete.image || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect fill='%23e2e8f0' width='100' height='100'/%3E%3C/svg%3E"} className="w-14 h-14 rounded-xl object-cover border-2 border-red-200" />
                               <div>
                                  <h4 className="font-black text-lg text-slate-800">{storeToDelete.name}</h4>
                                  <p className="text-xs text-slate-500 uppercase tracking-wider">{storeToDelete.category_id}</p>
@@ -1793,6 +1921,10 @@ ${itemsText}
                         <button onClick={() => setShowAddRIB(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
                      <form onSubmit={handleCreateRIB} className="p-8 space-y-6">
+                        <div className="space-y-1">
+                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Titulaire du compte (Nom Complet)</label>
+                           <input name="full_name" defaultValue={editingRIB?.full_name} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
+                        </div>
                         <div className="space-y-1">
                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Libellé (ex: BMCE Bank, Barid Bank)</label>
                            <input name="label" defaultValue={editingRIB?.label} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
@@ -2049,7 +2181,7 @@ ${itemsText}
                         <h3 className="text-xl font-black uppercase">{editingDriver ? 'Modifier' : 'Nouveau'} Livreur</h3>
                         <button onClick={() => setShowAddDriver(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
-                     <form onSubmit={handleCreateDriver} className="p-8 space-y-6">
+                     <form key={editingDriver?.id || 'new-driver'} onSubmit={handleCreateDriver} className="p-8 space-y-6">
                         <div className="flex justify-center mb-6">
                            <div className="relative group">
                               <div className="w-24 h-24 bg-slate-100 rounded-3xl overflow-hidden border-4 border-white shadow-xl">
@@ -2218,7 +2350,7 @@ ${itemsText}
                         <h3 className="text-xl font-black uppercase">{editingProduct ? 'Modifier' : 'Nouveau'} Produit</h3>
                         <button onClick={() => setShowAddProduct(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
-                     <form onSubmit={handleCreateProduct} className="p-8 space-y-6">
+                     <form key={editingProduct?.id || 'new-product'} onSubmit={handleCreateProduct} className="p-8 space-y-6">
                         <div className="flex justify-center mb-6">
                            <div className="relative group">
                               <div className="w-24 h-24 bg-slate-100 rounded-3xl overflow-hidden border-4 border-white shadow-xl">
@@ -2243,28 +2375,24 @@ ${itemsText}
                               </label>
                            </div>
                         </div>
+                        <div className="space-y-1">
+                           <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Nom du Produit</label>
+                           <input name="name" defaultValue={editingProduct?.name} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" required />
+                        </div>
                         <div className="grid grid-cols-2 gap-4">
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nom</label>
-                              <input name="name" defaultValue={editingProduct?.name} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Prix [DH]</label>
+                              <input name="price" type="number" step="0.01" defaultValue={editingProduct?.price} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" required />
                            </div>
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Prix (DH)</label>
-                              <input name="price" type="number" step="0.01" defaultValue={editingProduct?.price} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Boutique / Marque</label>
+                              <select name="store_id" defaultValue={editingProduct?.store_id} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all appearance-none cursor-pointer" required>
+                                 {stores.filter(s => !s.is_deleted).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                              </select>
                            </div>
                         </div>
                         <div className="space-y-1">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Magasin</label>
-                           <select name="store_id" defaultValue={editingProduct?.store_id} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all">
-                              {stores.filter(s => !s.isDeleted).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                           </select>
-                        </div>
-                        <div className="space-y-1">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">OU URL Image (Optionnel)</label>
-                           <input name="image_url" defaultValue={editingProduct?.image_url} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
-                        </div>
-                        <div className="space-y-1">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</label>
+                           <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Description</label>
                            <textarea name="description" defaultValue={editingProduct?.description} rows={3} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all resize-none" />
                         </div>
                         <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-[1.75rem] font-black uppercase text-xs tracking-widest shadow-xl">{editingProduct ? 'Enregistrer' : 'Ajouter au Catalogue'}</button>
@@ -2284,12 +2412,12 @@ ${itemsText}
                         <h3 className="text-xl font-black uppercase">{editingStore ? 'Modifier' : 'Nouveau'} Partenaire</h3>
                         <button onClick={() => setShowAddPartner(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
-                     <form onSubmit={handleCreateStore} className="p-8 space-y-6">
+                     <form key={editingStore?.id || 'new'} onSubmit={handleCreateStore} className="p-8 space-y-6">
                         <div className="flex justify-center mb-6">
                            <div className="relative group">
                               <div className="w-24 h-24 bg-slate-100 rounded-3xl overflow-hidden border-4 border-white shadow-xl">
-                                 {storeImagePreview || editingStore?.image_url ? (
-                                    <img src={storeImagePreview || editingStore?.image_url} className="w-full h-full object-cover" />
+                                 {storeImagePreview || editingStore?.image_url || editingStore?.image ? (
+                                    <img src={storeImagePreview || editingStore?.image_url || editingStore?.image} className="w-full h-full object-cover" />
                                  ) : (
                                     <div className="w-full h-full flex items-center justify-center text-slate-300">
                                        <StoreIcon size={40} />
@@ -2311,32 +2439,50 @@ ${itemsText}
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nom de la Marque</label>
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Nom de la Marque</label>
                               <input name="name" defaultValue={editingStore?.name} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                            </div>
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Catégorie</label>
-                              <select name="category_id" defaultValue={editingStore?.category_id} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all">
-                                 {(propCategories.length > 0 ? propCategories : dbCategories).map(c => <option key={c.id} value={c.id}>{c.name_fr}</option>)}
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Catégorie</label>
+                              <select name="category_id" defaultValue={editingStore?.category_id} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all appearance-none cursor-pointer">
+                                 {dbCategories.map((c: any) => (
+                                    <option key={c.id} value={c.id}>{c.name_fr}</option>
+                                 ))}
                               </select>
                            </div>
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tps Livraison (min)</label>
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Tps Livraison [min]</label>
                               <input name="delivery_time_min" type="number" defaultValue={editingStore?.delivery_time_min || 25} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                            </div>
                            <div className="space-y-1">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Frais Livraison (DH)</label>
+                              <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Frais Livraison [DH]</label>
                               <input name="delivery_fee" type="number" defaultValue={editingStore?.delivery_fee || 15} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                            </div>
                         </div>
-                        <div className="space-y-1">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">OU URL Logo/Image (Optionnel)</label>
-                           <input name="image_url" defaultValue={editingStore?.image_url} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
+                        <div className="grid grid-cols-2 gap-6 bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                           <div className="flex flex-col items-center gap-3">
+                              <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Principale</span>
+                              <div className="bauble_box">
+                                 <input className="bauble_input" id="is_featured_switch" name="is_featured" type="checkbox" defaultChecked={editingStore?.is_featured} />
+                                 <label className="bauble_label" htmlFor="is_featured_switch">Toggle</label>
+                              </div>
+                           </div>
+                           <div className="flex flex-col items-center gap-3">
+                              <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Product</span>
+                              <div className="bauble_box">
+                                 <input className="bauble_input" id="has_products_switch" name="has_products" type="checkbox" defaultChecked={editingStore?.has_products} />
+                                 <label className="bauble_label" htmlFor="has_products_switch">Toggle</label>
+                              </div>
+                           </div>
                         </div>
                         <div className="space-y-1">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Google Maps URL</label>
+                           <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Description de la Marque</label>
+                           <textarea name="description" defaultValue={editingStore?.description} rows={2} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all resize-none" placeholder="Une brève description de cette marque..." />
+                        </div>
+                        <div className="space-y-1">
+                           <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Google Maps URL</label>
                            <input name="maps_url" defaultValue={editingStore?.maps_url} className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                         </div>
                         <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-[1.75rem] font-black uppercase text-xs tracking-widest shadow-xl">Enregistrer la Marque</button>
@@ -2356,7 +2502,33 @@ ${itemsText}
                         <h3 className="text-xl font-black uppercase">{editingAnnouncement ? 'Modifier' : 'Nouvelle'} Annonce</h3>
                         <button onClick={() => setShowAddAnnouncement(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
-                     <form onSubmit={handleCreateAnnouncement} className="p-8 space-y-6">
+                     <form key={editingAnnouncement?.id || 'new-ann'} onSubmit={handleCreateAnnouncement} className="p-8 space-y-6">
+                        <div className="flex justify-center mb-6">
+                           <div className="relative group">
+                              <div className="w-48 h-24 bg-slate-100 rounded-2xl border-2 border-dashed border-slate-200 overflow-hidden flex items-center justify-center">
+                                 {announcementImagePreview ? (
+                                    <img src={announcementImagePreview} className="w-full h-full object-cover" />
+                                 ) : (
+                                    <div className="flex flex-col items-center text-slate-400">
+                                       <ImageIcon size={24} />
+                                       <span className="text-[9px] font-black uppercase mt-1">Image</span>
+                                    </div>
+                                 )}
+                              </div>
+                              <label className="absolute -bottom-2 -right-2 bg-orange-500 text-white p-2 rounded-xl cursor-pointer shadow-lg hover:bg-orange-600 transition-colors">
+                                 <Plus size={16} />
+                                 <input type="file" className="hidden" accept="image/*" onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                       const reader = new FileReader();
+                                       reader.onloadend = () => setAnnouncementImagePreview(reader.result as string);
+                                       reader.readAsDataURL(file);
+                                    }
+                                 }} />
+                              </label>
+                           </div>
+                        </div>
+
                         <div className="space-y-1">
                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Titre</label>
                            <input name="title" defaultValue={editingAnnouncement?.title} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
@@ -2365,7 +2537,23 @@ ${itemsText}
                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Message</label>
                            <textarea name="content" defaultValue={editingAnnouncement?.content} rows={4} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all resize-none" />
                         </div>
-                        <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-[1.75rem] font-black uppercase text-xs tracking-widest shadow-xl">Publier</button>
+
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                           <div className="flex items-center gap-3">
+                              <div className={`p-2 rounded-lg ${editingAnnouncement?.active ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
+                                 <Bell size={16} />
+                              </div>
+                              <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Annonce Active</span>
+                           </div>
+                           <div className="bauble_box scale-75">
+                              <input className="bauble_input" id="ann_active_switch" name="active" type="checkbox" defaultChecked={editingAnnouncement?.active ?? true} />
+                              <label className="bauble_label" htmlFor="ann_active_switch">Toggle</label>
+                           </div>
+                        </div>
+
+                        <button type="submit" className="w-full bg-slate-900 text-white py-5 rounded-[1.75rem] font-black uppercase text-xs tracking-widest shadow-xl">
+                           {editingAnnouncement ? 'Mettre à jour' : 'Publier l\'annonce'}
+                        </button>
                      </form>
                   </div>
                </div>
@@ -2382,7 +2570,7 @@ ${itemsText}
                         <h3 className="text-xl font-black uppercase">{editingCategory ? 'Modifier' : 'Nouvelle'} Catégorie</h3>
                         <button onClick={() => setShowAddCategory(false)} className="p-2 bg-slate-100 rounded-full"><X size={20} /></button>
                      </header>
-                     <form onSubmit={handleCreateCategory} className="p-8 space-y-6">
+                     <form key={editingCategory?.id || 'new-category'} onSubmit={handleCreateCategory} className="p-8 space-y-6">
                         <div className="grid grid-cols-2 gap-4">
                            <div className="space-y-1">
                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">ID (ex: food)</label>

@@ -44,6 +44,8 @@ export interface Store {
   delivery_time_min?: number;
   delivery_fee?: number;
   is_deleted?: boolean;
+  is_featured?: boolean;
+  has_products?: boolean;
 }
 
 export interface Category {
@@ -155,6 +157,7 @@ export interface RIB {
   id: number;
   rib: string;
   label: string;
+  full_name: string;
 }
 
 export interface SupportInfo {

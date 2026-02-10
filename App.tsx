@@ -27,10 +27,15 @@ const AdminLogin = React.lazy(() => import('./views/AdminLogin'));
 
 const LoadingScreen = () => (
   <div className="flex flex-col items-center justify-center min-h-screen bg-white">
-    <div className="animate-spin text-orange-500">
-      <Loader2 size={48} />
-    </div>
-    <p className="mt-4 text-slate-400 font-medium">Chargement...</p>
+    <svg className="pl" width="128px" height="128px" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+      <circle className="pl__ring1" cx="64" cy="64" r="60" fill="none" stroke="hsl(3,90%,55%)" strokeWidth="8" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="377 377" strokeDashoffset="-376.4"></circle>
+      <circle className="pl__ring2" cx="64" cy="64" r="52.5" fill="none" stroke="hsl(13,90%,55%)" strokeWidth="7" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="329.9 329.9" strokeDashoffset="-329.3"></circle>
+      <circle className="pl__ring3" cx="64" cy="64" r="46" fill="none" stroke="hsl(23,90%,55%)" strokeWidth="6" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="289 289" strokeDashoffset="-288.6"></circle>
+      <circle className="pl__ring4" cx="64" cy="64" r="40.5" fill="none" stroke="hsl(33,90%,55%)" strokeWidth="5" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="254.5 254.5" strokeDashoffset="-254"></circle>
+      <circle className="pl__ring5" cx="64" cy="64" r="36" fill="none" stroke="hsl(43,90%,55%)" strokeWidth="4" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="226.2 226.2" strokeDashoffset="-225.8"></circle>
+      <circle className="pl__ring6" cx="64" cy="64" r="32.5" fill="none" stroke="hsl(53,90%,55%)" strokeWidth="3" transform="rotate(-90,64,64)" strokeLinecap="round" strokeDasharray="204.2 204.2" strokeDashoffset="-203.9"></circle>
+    </svg>
+    <p className="mt-8 text-slate-800 font-black uppercase tracking-[0.2em] text-[10px]">Chargement en cours...</p>
   </div>
 );
 
@@ -170,6 +175,11 @@ export default function App() {
         is_deleted: s.is_deleted || false,
         is_active: s.is_active,
         is_open: s.is_open,
+        is_featured: s.is_featured,
+        has_products: s.has_products,
+        delivery_time_min: s.delivery_time_min,
+        delivery_fee: s.delivery_fee,
+        maps_url: s.maps_url,
         products: productsRes.data
           .filter((p: any) => p.store_id === s.id)
           .map((p: any) => ({
