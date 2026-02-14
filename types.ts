@@ -49,6 +49,7 @@ export interface Store {
   has_products?: boolean;
   lat?: number;
   lng?: number;
+  sub_category?: string;
 }
 
 export interface Category {
@@ -60,6 +61,14 @@ export interface Category {
   color_class?: string;
   display_order?: number;
   image_url?: string;
+  sub_categories?: string[]; // Legacy - kept for compatibility
+}
+
+export interface SubCategory {
+  id: string;
+  name: string;
+  category_id: string;
+  created_at?: string;
 }
 
 export interface DriverDocument {
@@ -94,8 +103,12 @@ export interface Driver {
 
 export interface CartItem {
   product?: Product;
+  productName?: string;
+  storeName?: string;
+  price?: number;
   quantity: number;
   note?: string;
+  image_base64?: string;
 }
 
 export type OrderStatus =
@@ -117,13 +130,18 @@ export interface Order {
   location: { lat: number; lng: number } | null;
   items: CartItem[];
   textOrder?: string;
+  deliveryNote?: string;
+  userId?: string;
   prescriptionImage?: string;
   paymentReceiptImage?: string;
   prescription_base64?: string;
   payment_receipt_base64?: string;
   total: number;
+  total_products?: number;
+  total_final?: number;
   status: OrderStatus;
   paymentMethod: 'cash' | 'transfer';
+  payment_method?: 'cash' | 'transfer';
   rib?: string;
   timestamp: number;
   storeRating?: number;

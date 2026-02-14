@@ -1,9 +1,9 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Order, OrderStatus, Driver, Store, Product, CategoryID, Announcement, UserProfile, DriverDocument, RIB, SupportInfo, SupportTicket, SupportMessage } from '../types';
+import { Order, OrderStatus, Driver, Store, Product, CategoryID, Announcement, UserProfile, DriverDocument, RIB, SupportInfo, SupportTicket, SupportMessage, SubCategory } from '../types';
 import {
    Package, Clock, CheckCircle2, Users, MapPin, Eye,
    LayoutDashboard, ShoppingBag, Truck, Store as StoreIcon,
@@ -11,8 +11,8 @@ import {
    ChevronRight, ChevronLeft, ExternalLink, X, Check, MoreVertical,
    Plus, Smartphone, MessageCircle, Camera, Link as LinkIcon, Copy, Map as MapIcon,
    Star, AlertTriangle, User, Calendar, CreditCard, Phone, Edit3, Image as ImageIcon, Bike,
-   Save, Megaphone, Upload, Navigation, Trash, Info, UserCheck, UserMinus, ShieldCheck, RotateCw, LogOut, Share2, Clipboard, Scissors, Copy as CopyIcon, Quote, MessageSquare, Box,
-   DollarSign, BarChart3, TrendingUp, PieChart as PieChartIcon, Receipt, AlertCircle, FileText, Download, ZoomIn, ZoomOut, Mail, Target
+   Save, Megaphone, Upload, Navigation, Trash, Info, UserCheck, UserMinus, ShieldCheck, RotateCw, LogOut, Share2, Clipboard, Scissors, Copy as CopyIcon, Quote, MessageSquare, Box, History as HistoryIcon,
+   DollarSign, BarChart3, TrendingUp, PieChart as PieChartIcon, Receipt, AlertCircle, FileText, Download, ZoomIn, ZoomOut, Mail, Target, ListTree
 } from 'lucide-react';
 import { CATEGORIES, MOCK_STORES } from '../constants';
 import { supabase, dataUrlToBlob } from '../lib/supabase';
@@ -41,6 +41,7 @@ interface AdminDashboardProps {
    onBack: () => void;
    setStores: React.Dispatch<React.SetStateAction<Store[]>>;
    categories: any[];
+   subCategories: SubCategory[];
    pageVisibility?: {
       hideFinance: boolean;
       hideStatistics: boolean;
@@ -90,6 +91,15 @@ const UserActiveMarkerIcon = new L.Icon({
    iconAnchor: [17, 35],
    className: 'filter-green'
 });
+
+const getOrderStoreDisplay = (order: Order) => {
+   if (order.items && order.items.length > 0) {
+      const uniqueStores = Array.from(new Set(order.items.map(it => it.storeName).filter(Boolean)));
+      if (uniqueStores.length > 1) return "Multi-Magasins";
+      if (uniqueStores.length === 1) return uniqueStores[0];
+   }
+   return order.storeName || 'Magasin Inconnu';
+};
 
 // Component pour afficher la barre latérale logistique
 const LogisticsSidebar: React.FC<{
@@ -144,7 +154,7 @@ const LogisticsSidebar: React.FC<{
                               {order.status.toUpperCase()}
                            </span>
                         </div>
-                        <p className="font-bold text-sm text-slate-800 mt-2">{order.storeName || stores.find(s => s.id === (order as any).storeId || s.id === (order as any).store_id)?.name || 'Magasin Inconnu'}</p>
+                        <p className="font-bold text-sm text-slate-800 mt-2">{getOrderStoreDisplay(order)}</p>
 
                         <div className="space-y-2 mt-2 pt-2 border-t border-slate-100">
                            <div className="flex items-center justify-between">
@@ -338,11 +348,19 @@ const MapController: React.FC<{ targetPos: [number, number] | null }> = ({ targe
    }, [map]);
 
    useEffect(() => {
+      let timer: any;
       if (targetPos) {
          map.flyTo(targetPos, 15, { duration: 1.5 });
          // Forcer un recalcul de taille pendant le mouvement pour éviter les bords gris
-         setTimeout(() => map.invalidateSize(), 600);
+         timer = setTimeout(() => {
+            if (map && (map as any)._container) {
+               map.invalidateSize();
+            }
+         }, 600);
       }
+      return () => {
+         if (timer) clearTimeout(timer);
+      };
    }, [targetPos, map]);
 
    return null;
@@ -806,7 +824,7 @@ const DriverStats: React.FC<{ driverId: string }> = ({ driverId }) => {
 };
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({
-   orders: propOrders, users, drivers, stores, announcements: propAnnouncements, categories: propCategories, supportNumber: propSupport,
+   orders: propOrders, users, drivers, stores, announcements: propAnnouncements, categories: propCategories, subCategories: propSubCategories, supportNumber: propSupport,
    onUpdateStatus, onAssignDriver, onArchiveOrder, onRestoreOrder, onDeletePermanently,
    onBanUser, onLogout, onBack, setStores,
    pageVisibility = { hideFinance: false, hideStatistics: false, hideAnnouncements: false }
@@ -816,6 +834,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
    const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
    const [viewingImage, setViewingImage] = useState<string | null>(null);
+   const [currentAdmin, setCurrentAdmin] = useState<any>(null);
+   const [showProfileModal, setShowProfileModal] = useState(false);
+
+   useEffect(() => {
+      const adminData = localStorage.getItem('veetaa_admin_token');
+      if (adminData) {
+         try {
+            setCurrentAdmin(JSON.parse(adminData));
+         } catch (e) {
+            console.error("Error parsing admin data", e);
+         }
+      }
+   }, []);
 
    // États pour lier un store à la carte
    const [pickingStore, setPickingStore] = useState<Store | null>(null);
@@ -832,6 +863,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    const [currentPage, setCurrentPage] = useState(1);
    const [itemsPerPage] = useState(15);
    const [isRefreshing, setIsRefreshing] = useState(false);
+   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+   // Debounce search term
+   useEffect(() => {
+      const timer = setTimeout(() => {
+         setDebouncedSearchTerm(searchTerm);
+      }, 300);
+      return () => clearTimeout(timer);
+   }, [searchTerm]);
+
+   // Selection State
+   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+
 
    // 1s Update frequency for interpolation (especially for MAPS tab)
    useEffect(() => {
@@ -955,7 +999,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
          supabase.removeChannel(channel);
       };
    }, []);
-   const getWeeklyData = () => {
+   const weeklyData = useMemo(() => {
       const last7Days = Array.from({ length: 7 }, (_, i) => {
          const date = new Date();
          date.setDate(date.getDate() - (6 - i));
@@ -977,9 +1021,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             ventes: count
          };
       });
-   };
+   }, [propOrders]);
 
-   const weeklyData = getWeeklyData();
+   const topStores = useMemo(() => {
+      return Object.entries(propOrders.reduce((acc, order) => {
+         const storeName = order.storeName || 'Inconnu';
+         acc[storeName] = (acc[storeName] || 0) + 1;
+         return acc;
+      }, {} as Record<string, number>))
+         .map(([name, count]) => ({ name, count }))
+         .sort((a, b) => b.count - a.count)
+         .slice(0, 5);
+   }, [propOrders]);
+
+   const successRateStats = useMemo(() => {
+      return [
+         { name: 'Livrées', value: propOrders.filter(o => o.status === 'delivered').length },
+         { name: 'Incomplètes/Annulées', value: propOrders.filter(o => ['refused', 'unavailable', 'cancelled'].includes(o.status)).length }
+      ];
+   }, [propOrders]);
+
+   const loyalClients = useMemo(() => {
+      return Object.values(propOrders.reduce((acc, order) => {
+         const groupingKey = (order.phone && order.phone !== 'null' && order.phone !== 'undefined')
+            ? order.phone
+            : `name_${order.customerName}`;
+
+         if (!acc[groupingKey]) {
+            acc[groupingKey] = { name: order.customerName, count: 0 };
+         }
+         acc[groupingKey].count += 1;
+         return acc;
+      }, {} as Record<string, { name: string, count: number }>))
+         .sort((a, b) => b.count - a.count)
+         .slice(0, 5);
+   }, [propOrders]);
 
    const [editingOrderNotes, setEditingOrderNotes] = useState<string>('');
    const [showAddDriver, setShowAddDriver] = useState(false);
@@ -1015,6 +1091,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
    }, [editingCategory]);
 
+   const [showAddSubCategory, setShowAddSubCategory] = useState(false);
+   const [editingSubCategory, setEditingSubCategory] = useState<SubCategory | null>(null);
+
    const handleCategoryImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) {
@@ -1035,9 +1114,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    const logo = "LOGO.png"; // Sera géré par le chemin relatif ou base64
 
    // --- ACTIONS ---
-   const copyToClipboard = (text: string) => {
+   const copyToClipboard = (text: string, message?: string) => {
       navigator.clipboard.writeText(text);
-      alert("Copié : " + text);
+      alert(message || ("Copié : " + text));
    };
 
 
@@ -1069,7 +1148,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             name_ar: formData.get('name_ar') as string,
             name_en: formData.get('name_en') as string,
             display_order: parseInt(formData.get('display_order') as string) || 0,
-            image_url: categoryImageURL
+            image_url: categoryImageURL,
+            sub_categories: (formData.get('sub_categories') as string || "").split(',').map(s => s.trim()).filter(s => s !== "")
          };
 
          if (editingCategory) {
@@ -1095,6 +1175,45 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       } catch (err) {
          alert("Erreur lors de la création de la catégorie");
       }
+   };
+
+   const handleCreateSubCategory = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const form = e.target as HTMLFormElement;
+      const formData = new FormData(form);
+
+      const subData = {
+         name: formData.get('name') as string,
+         category_id: formData.get('category_id') as string,
+      };
+
+      try {
+         if (editingSubCategory) {
+            const { error } = await supabase.from('sub_categories').update(subData).eq('id', editingSubCategory.id);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddSubCategory(false);
+               setEditingSubCategory(null);
+               onBack();
+            }
+         } else {
+            const { error } = await supabase.from('sub_categories').insert([subData]);
+            if (error) alert("Erreur: " + error.message);
+            else {
+               setShowAddSubCategory(false);
+               onBack();
+            }
+         }
+      } catch (err) {
+         alert("Erreur lors de la création de la sous-catégorie");
+      }
+   };
+
+   const handleDeleteSubCategory = async (id: string) => {
+      if (!confirm("Voulez-vous vraiment supprimer cette sous-catégorie ?")) return;
+      const { error } = await supabase.from('sub_categories').delete().eq('id', id);
+      if (error) alert("Erreur: " + error.message);
+      else onBack();
    };
 
 
@@ -1398,11 +1517,40 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
    };
 
    const handleUpdateOrderStatus = async (id: string, newStatus: OrderStatus) => {
-      const { error } = await supabase.from('orders').update({ status: newStatus }).eq('id', parseInt(id));
+      const currentOrder = propOrders.find(o => o.id === id);
+      const currentHistory = (currentOrder?.statusHistory || []).map(h => ({
+         status: h.status,
+         timestamp: typeof h.timestamp === 'string' ? new Date(h.timestamp).getTime() : h.timestamp
+      }));
+      const newHistoryEntry = { status: newStatus, timestamp: Date.now() };
+      const updatedHistory = [...currentHistory, newHistoryEntry];
+
+      const isArchivedStatus = newStatus === 'delivered' || newStatus === 'refused' || newStatus === 'unavailable';
+
+      const { error } = await supabase
+         .from('orders')
+         .update({
+            status: newStatus,
+            status_history: updatedHistory,
+            is_archived: isArchivedStatus
+         })
+         .eq('id', parseInt(id));
+
       if (error) alert("Erreur: " + error.message);
       else {
+         // Update local state for both the list and the selected order
+         // The `updatedOrder` variable is not used, but the logic below updates state correctly.
+         // const updatedOrder = currentOrder ? { ...currentOrder, status: newStatus, statusHistory: updatedHistory } : null;
+
+         // Assuming `setPropOrders` exists or `onUpdateStatus` handles the main list update
+         // setOrders(prev => prev.map(o => o.id === id ? { ...o, status: newStatus, statusHistory: updatedHistory } : o));
+
+         if (selectedOrder && selectedOrder.id === id) {
+            setSelectedOrder(prev => prev ? { ...prev, status: newStatus, statusHistory: updatedHistory } : null);
+         }
+
+         // Keep legacy callback if needed, but state update is handled above
          onUpdateStatus(id, newStatus);
-         setSelectedOrder(prev => prev ? { ...prev, status: newStatus } : null);
       }
    };
 
@@ -1421,6 +1569,68 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       else {
          onAssignDriver(orderId, driverId);
          setSelectedOrder(prev => prev ? { ...prev, assignedDriverId: driverId } : null);
+      }
+   };
+
+   const handleToggleOrderSelection = (id: string) => {
+      setSelectedOrderIds(prev =>
+         prev.includes(id) ? prev.filter(oid => oid !== id) : [...prev, id]
+      );
+   };
+
+   const handleSelectAllOrders = () => {
+      if (selectedOrderIds.length > 0) {
+         setSelectedOrderIds([]);
+      } else {
+         setSelectedOrderIds(paginatedOrders.map(o => o.id));
+      }
+   };
+
+   const handleDeleteSingleOrder = async (id: string) => {
+      if (!confirm(`Voulez-vous vraiment supprimer la commande #${id} ?`)) return;
+      try {
+         // Optimistic removal from the selection
+         setSelectedOrderIds(prev => prev.filter(oid => oid !== id));
+
+         // Call parent delete handler (which updates the props list)
+         if (onDeletePermanently) {
+            await onDeletePermanently(id);
+         } else {
+            // Fallback direct delete if prop is missing
+            const { error } = await supabase.from('orders').delete().eq('id', parseInt(id));
+            if (error) throw error;
+            alert("Commande supprimée !");
+            onBack();
+         }
+      } catch (err: any) {
+         alert("Erreur: " + err.message);
+      }
+   };
+
+   const handleBulkDeleteOrders = async () => {
+      if (selectedOrderIds.length === 0) return;
+      if (!confirm(`Voulez-vous supprimer ces ${selectedOrderIds.length} commandes définitivement ?`)) return;
+
+      const idsToDelete = [...selectedOrderIds];
+      try {
+         // Reset selection immediately for responsiveness
+         setSelectedOrderIds([]);
+
+         // Delete each one
+         for (const id of idsToDelete) {
+            if (onDeletePermanently) {
+               await onDeletePermanently(id);
+            } else {
+               await supabase.from('orders').delete().eq('id', parseInt(id));
+            }
+         }
+
+         if (!onDeletePermanently) {
+            alert(`${idsToDelete.length} commandes supprimées !`);
+            onBack();
+         }
+      } catch (err: any) {
+         alert("Erreur lors de la suppression groupée: " + err.message);
       }
    };
 
@@ -1554,6 +1764,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
          const storeData: any = {
             name: formData.get('name') as string,
             category_id: formData.get('category_id') as string,
+            sub_category: formData.get('sub_category') as string,
             delivery_time_min: parseInt(formData.get('delivery_time_min') as string),
             delivery_fee: parseFloat(formData.get('delivery_fee') as string),
             maps_url: formData.get('maps_url') as string,
@@ -1589,66 +1800,68 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
    };
 
-   const displayOrders = propOrders.filter(o => {
-      const isHistory = o.isArchived || o.status === 'delivered';
-      if (activeTab === 'HISTORY') {
-         return isHistory;
-      } else {
-         if (isHistory) return false;
-      }
+   const displayOrders = useMemo(() => {
+      return propOrders.filter(o => {
+         const isHistory = o.isArchived || o.status === 'delivered';
+         if (activeTab === 'HISTORY') {
+            if (!isHistory) return false;
+         } else if (activeTab === 'ORDERS') {
+            if (isHistory) return false;
+         }
 
-      const matchesSearch = o.customerName.toLowerCase().includes(searchTerm.toLowerCase()) || o.id.includes(searchTerm);
-      const matchesStatus = statusFilter === 'all' || o.status === statusFilter;
-      const matchesStore = storeFilter === 'all' || o.storeName === storeFilter;
-      const matchesDate = !dateFilter || new Date(o.timestamp).toLocaleDateString() === new Date(dateFilter).toLocaleDateString();
-      return matchesSearch && matchesStatus && matchesStore && matchesDate;
-   });
+         const matchesSearch = o.customerName.toLowerCase().includes(debouncedSearchTerm.toLowerCase()) || o.id.includes(debouncedSearchTerm);
+         const matchesStatus = statusFilter === 'all' || o.status === statusFilter;
+         const matchesStore = storeFilter === 'all' || o.storeName === storeFilter;
+         const matchesDate = !dateFilter || new Date(o.timestamp).toLocaleDateString() === new Date(dateFilter).toLocaleDateString();
+         return matchesSearch && matchesStatus && matchesStore && matchesDate;
+      });
+   }, [propOrders, activeTab, debouncedSearchTerm, statusFilter, storeFilter, dateFilter]);
 
    const startIndex = (currentPage - 1) * itemsPerPage;
-   const paginatedOrders = displayOrders.slice(startIndex, startIndex + itemsPerPage);
-   const totalPages = Math.ceil(displayOrders.length / itemsPerPage);
+   const paginatedOrders = useMemo(() => displayOrders.slice(startIndex, startIndex + itemsPerPage), [displayOrders, startIndex, itemsPerPage]);
+   const totalPages = useMemo(() => Math.ceil(displayOrders.length / itemsPerPage), [displayOrders.length, itemsPerPage]);
 
    // --- GLOBAL SEARCH FILTERS ---
-   const lowerSearch = searchTerm.toLowerCase();
+   const lowerSearch = debouncedSearchTerm.toLowerCase();
 
-   const filteredUsers = users.filter(u =>
+   const filteredUsers = useMemo(() => users.filter(u =>
       (u.fullName || '').toLowerCase().includes(lowerSearch) ||
       (u.phone || '').includes(lowerSearch) ||
       (u.email && u.email.toLowerCase().includes(lowerSearch))
-   );
+   ), [users, lowerSearch]);
 
-   const filteredDrivers = drivers.filter(d =>
+   const filteredDrivers = useMemo(() => drivers.filter(d =>
       (d.full_name && d.full_name.toLowerCase().includes(lowerSearch)) ||
       (d.phone || '').includes(lowerSearch)
-   );
+   ), [drivers, lowerSearch]);
 
-   const filteredStores = stores.filter(s =>
+   const filteredStores = useMemo(() => stores.filter(s =>
       (s.name || '').toLowerCase().includes(lowerSearch) ||
       (s.category_id || '').toLowerCase().includes(lowerSearch)
-   );
+   ), [stores, lowerSearch]);
 
-   const filteredProducts = localProducts.filter(p =>
+   const filteredProducts = useMemo(() => localProducts.filter(p =>
       (p.name || '').toLowerCase().includes(lowerSearch) ||
       (p.storeName && p.storeName.toLowerCase().includes(lowerSearch))
-   );
+   ), [localProducts, lowerSearch]);
 
-   const filteredCategories = dbCategories.filter(c =>
+   const filteredCategories = useMemo(() => dbCategories.filter(c =>
       (c.name_fr || '').toLowerCase().includes(lowerSearch) ||
       (c.name_ar || '').toLowerCase().includes(lowerSearch)
-   );
+   ), [dbCategories, lowerSearch]);
 
-   const filteredTickets = supportTickets.filter(t => {
+   const filteredTickets = useMemo(() => supportTickets.filter(t => {
       const matchesStatus = supportFilter === 'all' || (supportFilter === 'pending' ? t.status !== 'resolved' : t.status === 'resolved');
       const matchesSearch =
          (t.driver_name && t.driver_name.toLowerCase().includes(lowerSearch)) ||
          (t.driver_phone && t.driver_phone.includes(lowerSearch)) ||
          (t.description && t.description.toLowerCase().includes(lowerSearch));
       return matchesStatus && matchesSearch;
-   });
+   }), [supportTickets, supportFilter, lowerSearch]);
 
    const prepareShareText = (order: Order) => {
       const itemsText = order.items.length > 0
-         ? order.items.map(it => `- ${it.quantity}x ${it.product?.name} ${it.note ? `(Note: ${it.note})` : ''}`).join('\n')
+         ? order.items.map(it => `- ${it.quantity}x ${it.productName || it.product?.name || 'Produit'} [${it.storeName || 'N/A'}] ${it.note ? `(Note: ${it.note})` : ''}`).join('\n')
          : 'Commande personnalisée (voir note générale)';
 
       const locationUrl = order.location
@@ -1667,15 +1880,18 @@ ${order.textOrder && order.textOrder.length > 0 ? order.textOrder : 'Aucune'}
 ?? DÉTAILS:
 ${itemsText}
 
-?? TOTAL À PAYER: ${order.total + 15} DH
+?? TOTAL À PAYER: ${order.total_final || (order.total + 15)} DH
 (Livraison 15 DH incluse)`;
    };
 
    const handleShareOrder = (order: Order) => {
       const shareText = prepareShareText(order);
-      navigator.clipboard.writeText(shareText);
-      alert("Détails de la commande copiés !");
+      copyToClipboard(shareText, "Détails de la commande copiés !");
    };
+
+
+
+
 
    const generateOrderPDF = (order: Order) => {
       const doc = new jsPDF();
@@ -1684,12 +1900,25 @@ ${itemsText}
       const slateDark = '#1e293b';
       const grayLight = '#94a3b8';
 
+      // --- PAGE 1: VUE D'ENSEMBLE ---
+
+      // En-tête avec Logo
+      try {
+         // Charger le logo (chemin relatif ou base64 si nécessaire, ici on suppose qu'il est accessible)
+         // Note: En production, il est préférable de précharger l'image en base64 pour éviter les problèmes de chemin
+         const logoImg = new Image();
+         logoImg.src = '/ln3 (1).png';
+         doc.addImage(logoImg, 'PNG', 15, 10, 40, 40);
+      } catch (e) {
+         console.warn("Logo non chargé", e);
+      }
+
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(22);
+      doc.setFontSize(24);
       doc.setTextColor(blueColor);
       doc.text("DÉTAILS COMMANDE", 70, 25);
-      doc.setFontSize(14);
-      doc.text(`#${order.id} `, 70, 33);
+      doc.setFontSize(16);
+      doc.text(`#${order.id} `, 70, 35);
 
       doc.setFontSize(10);
       doc.setTextColor(grayLight);
@@ -1698,125 +1927,178 @@ ${itemsText}
       doc.setFont('helvetica', 'bold');
       doc.text(new Date().toLocaleString(), 150, 26);
 
-      doc.setDrawColor(241, 245, 249);
+      // Cadre Informations Générales
+      doc.setDrawColor(30, 58, 138); // Bleu foncé
+      doc.setLineWidth(0.5);
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(15, 45, 180, 52, 5, 5, 'FD');
-      doc.setFontSize(11);
+      doc.roundedRect(15, 55, 180, 85, 3, 3, 'FD');
+
+      // Colonne Gauche: Client
+      doc.setFontSize(12);
       doc.setTextColor(orangeColor);
-      doc.text("INFORMATIONS CLIENT", 25, 55);
+      doc.text("CLIENT", 25, 65);
       doc.setFontSize(10);
       doc.setTextColor(slateDark);
-      doc.text(`Nom: ${order.customerName} `, 25, 65);
-      doc.text(`Tél: ${order.phone} `, 25, 72);
+      doc.text(`Nom: ${order.customerName}`, 25, 75);
+      doc.text(`Tél: ${order.phone}`, 25, 82);
 
-      // Localisation avec lien Google Maps cliquable
       if (order.location) {
          const mapsUrl = `https://www.google.com/maps?q=${order.location.lat},${order.location.lng}`;
-         doc.text(`Localisation: `, 25, 79);
-         doc.setTextColor('#3b82f6'); // Bleu pour le lien
-         doc.textWithLink('Voir sur Google Maps', 55, 79, { url: mapsUrl });
-         doc.setTextColor(slateDark); // Retour à la couleur normale
+         doc.text(`Loc: `, 25, 89);
+         doc.setTextColor('#3b82f6');
+         doc.textWithLink('Voir sur Maps', 35, 89, { url: mapsUrl });
+         doc.setTextColor(slateDark);
       } else {
-         doc.text(`Localisation: Non spécifiée`, 25, 79);
+         doc.text(`Loc: Non spécifiée`, 25, 89);
       }
 
-      doc.text(`Paiement: ${order.paymentMethod === 'cash' ? 'Espèces' : 'Virement'}`, 25, 86);
-
-      // Colonne Droite: MAGASIN
-      doc.setFontSize(11);
+      // Colonne Droite: Magasin (si unique) ou Info app
+      doc.setFontSize(12);
       doc.setTextColor(blueColor);
-      doc.text("INFORMATIONS MAGASIN", 110, 55);
+      doc.text("INFO COMMANDE", 110, 65);
       doc.setFontSize(10);
       doc.setTextColor(slateDark);
-      doc.text(`Magasin: ${order.storeName || 'Non spécifié'}`, 110, 65);
+      doc.text(`Statut: ${order.status.toUpperCase()}`, 110, 75);
+      doc.text(`Paiement: ${order.paymentMethod === 'cash' ? 'Espèces' : 'Virement'}`, 110, 82);
 
-      const storeObj = stores.find(s => s.name === order.storeName);
-      if (storeObj && (storeObj.maps_url || storeObj.mapsUrl)) {
-         const sUrl = storeObj.maps_url || storeObj.mapsUrl || '';
-         doc.text(`Localisation: `, 110, 72);
-         doc.setTextColor('#3b82f6');
-         doc.textWithLink('Lien Google Maps', 140, 72, { url: sUrl });
-         doc.setTextColor(slateDark);
-      } else {
-         doc.text(`Localisation: Non spécifiée`, 110, 72);
-      }
+      const storeDisplay = getOrderStoreDisplay(order);
+      doc.text(`Magasin: ${storeDisplay}`, 110, 89, { maxWidth: 80 });
 
-      if (order.rib) {
-         doc.setFontSize(8);
-         doc.text(`RIB: ${order.rib}`, 25, 91);
-         doc.setFontSize(10);
-      }
+      // Add Store Location(s) iteratively
+      const uniqueStoreNames = Array.from(new Set(order.items.map(it => it.storeName).filter(Boolean)));
+      if (uniqueStoreNames.length === 0 && order.storeName) uniqueStoreNames.push(order.storeName);
 
-      let currentY = 100;
-
-      if (order.textOrder) {
-         doc.setFillColor(255, 247, 237);
-         doc.roundedRect(15, currentY, 180, 25, 5, 5, 'F');
-         doc.setTextColor(orangeColor);
-         doc.text("NOTE DU CLIENT:", 25, currentY + 9);
-         doc.setTextColor(slateDark);
-         doc.setFont('helvetica', 'normal');
-         doc.text(order.textOrder, 25, currentY + 17, { maxWidth: 160 });
-         currentY += 30;
-      }
-
-      const tableStartY = currentY;
-      const tableData = order.items.length > 0
-         ? order.items.map(it => [it.quantity + 'x', it.product?.name || 'Inconnu', it.note || '-', (it.product?.price || 0) + ' DH'])
-         : [['1x', 'Commande Personnalisée', '-', order.total + ' DH']];
-
-      autoTable(doc, {
-         startY: tableStartY,
-         head: [['Qté', 'Produit', 'Note', 'Prix']],
-         body: tableData,
-         theme: 'grid',
-         headStyles: { fillColor: blueColor, textColor: 255 },
-         styles: { fontSize: 9 },
-         columnStyles: { 3: { halign: 'right' } }
+      let currentLocY = 96;
+      uniqueStoreNames.forEach(sName => {
+         const storeObj = stores.find(s => s.name === sName);
+         if (storeObj && (storeObj.maps_url || storeObj.mapsUrl)) {
+            const sLoc = storeObj.maps_url || storeObj.mapsUrl;
+            doc.setFontSize(8);
+            doc.setTextColor(slateDark);
+            doc.text(`${sName}:`, 110, currentLocY);
+            doc.setTextColor('#3b82f6');
+            doc.textWithLink('Voir sur Maps', 145, currentLocY, { url: sLoc });
+            doc.setTextColor(slateDark);
+            doc.setFontSize(10);
+            currentLocY += 6;
+         }
       });
 
-      const lastTable = (doc as any).lastAutoTable;
-      const finalY = (lastTable ? lastTable.finalY : tableStartY) + 10;
-      doc.setFontSize(14);
-      doc.setTextColor(orangeColor);
-      doc.text(`Total à Payer: ${order.total + 15} DH`, 195, finalY, { align: 'right' });
-
-      // Ajouter l'image de prescription sur une page dédiée si disponible
-      if (order.prescription_base64) {
-         try {
-            let imgData = order.prescription_base64;
-            if (!imgData.startsWith('data:')) {
-               imgData = `data:image/jpeg;base64,${imgData}`;
-            }
-
-            // Nouvelle page pour l'ordonnance
-            doc.addPage();
-
-            // Titre de la page
-            doc.setFillColor(219, 234, 254);
-            doc.rect(0, 0, 210, 40, 'F');
-            doc.setTextColor(blueColor);
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(20);
-            doc.text("?? ORDONNANCE / PRESCRIPTION", 105, 20, { align: 'center' });
-            doc.setFontSize(12);
-            doc.setTextColor(grayLight);
-            doc.text(`Commande #${order.id}`, 105, 30, { align: 'center' });
-
-            // Image en grand (presque pleine page)
-            // Format A4: 210mm x 297mm
-            // Marges: 15mm de chaque côté
-            const imgWidth = 180; // 210 - 30 (marges)
-            const imgHeight = 240; // Hauteur maximale
-
-            doc.addImage(imgData, 'JPEG', 15, 50, imgWidth, imgHeight);
-
-         } catch (err) {
-            console.error("Erreur lors de l'ajout de l'image au PDF:", err);
-         }
+      // Note Admin / Livraison
+      if (order.deliveryNote) {
+         doc.setFontSize(9);
+         doc.setTextColor(orangeColor);
+         doc.text("NOTE LIVRAISON:", 25, 105);
+         doc.setTextColor(slateDark);
+         doc.text(order.deliveryNote, 25, 112, { maxWidth: 160 });
       }
 
-      doc.save(`Commande_${order.id}.pdf`);
+      // Note Client Globale
+      if (order.textOrder) {
+         doc.setFontSize(9);
+         doc.setTextColor(orangeColor);
+         doc.text("NOTE ADMIN:", 25, 125);
+         doc.setTextColor(slateDark);
+         doc.text(order.textOrder, 25, 132, { maxWidth: 160 });
+      }
+
+      // --- NEW: SUMMARY TABLE WITH NOTES ---
+      const tableRows = order.items.map(it => [
+         it.productName || it.product?.name || 'Produit',
+         it.quantity || 1,
+         it.storeName || 'N/A',
+         it.note || '-'
+      ]);
+
+      autoTable(doc, {
+         startY: 145,
+         head: [['Produit', 'Qté', 'Magasin', 'Note/Consigne']],
+         body: tableRows,
+         headStyles: { fillColor: blueColor },
+         styles: { fontSize: 9 },
+         margin: { left: 15, right: 15 }
+      });
+      const totalY = 250;
+      doc.setFillColor(30, 58, 138); // Fond Bleu
+      doc.roundedRect(120, totalY, 75, 30, 3, 3, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(10);
+      doc.text("TOTAL À PAYER", 157, totalY + 10, { align: 'center' });
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${(order.total_final || (order.total + 15)).toFixed(2)} DH`, 157, totalY + 22, { align: 'center' });
+
+      // --- PAGES SUIVANTES : DÉTAIL PAR ARTICLE ---
+
+      order.items.forEach((item, index) => {
+         doc.addPage();
+
+         // En-tête Page Article
+         doc.setFillColor(241, 245, 249);
+         doc.rect(0, 0, 210, 30, 'F');
+         doc.setTextColor(blueColor);
+         doc.setFontSize(16);
+         doc.text(`ARTICLE #${index + 1}: ${item.productName || item.product?.name || 'Produit'}`, 15, 20);
+
+         let yPos = 50;
+
+         // Image du produit (si disponible)
+         if (item.image_base64) {
+            try {
+               let imgData = item.image_base64;
+               if (!imgData.startsWith('data:')) imgData = `data:image/jpeg;base64,${imgData}`;
+
+               // Image large centrée
+               doc.addImage(imgData, 'JPEG', 35, yPos, 140, 100); // 140x100mm
+               yPos += 110;
+            } catch (e) {
+               doc.setTextColor(grayLight);
+               doc.text("(Image non disponible)", 105, yPos + 20, { align: 'center' });
+               yPos += 40;
+            }
+         } else {
+            // Placeholder si pas d'image
+            doc.setDrawColor(grayLight);
+            doc.rect(55, yPos, 100, 60);
+            doc.text("Aucune image", 105, yPos + 30, { align: 'center' });
+            yPos += 70;
+         }
+
+         // Détails de l'article
+         doc.setFontSize(14);
+         doc.setTextColor(slateDark);
+         doc.text(`Quantité: ${item.quantity || 1}`, 20, yPos);
+         doc.text(`Prix Unitaire: ${(item.price || item.product?.price || 0).toFixed(2)} DH`, 100, yPos);
+
+         yPos += 15;
+         doc.setFontSize(16);
+         doc.setTextColor(orangeColor);
+         doc.text(`Total Ligne: ${((item.quantity || 1) * (item.price || item.product?.price || 0)).toFixed(2)} DH`, 20, yPos);
+
+         yPos += 20;
+
+         // Note de l'article (Consigne spécifique)
+         if (item.note) {
+            doc.setFillColor(255, 247, 237); // Fond Orange léger
+            doc.roundedRect(15, yPos, 180, 40, 3, 3, 'F');
+
+            doc.setFontSize(12);
+            doc.setTextColor(orangeColor);
+            doc.text("CONSIGNE SPÉCIFIQUE (NOTE):", 25, yPos + 10);
+
+            doc.setFontSize(11);
+            doc.setTextColor(slateDark);
+            doc.text(item.note, 25, yPos + 20, { maxWidth: 160 });
+         }
+
+         // Footer avec pagination
+         doc.setFontSize(10);
+         doc.setTextColor(grayLight);
+         doc.text(`Page ${index + 2} / ${order.items.length + 1}`, 105, 290, { align: 'center' });
+      });
+
+      // Sauvegarde
+      doc.save(`Commande_Detaillee_Veetaa_${order.id}.pdf`);
    };
 
    const getStatusConfig = (status: OrderStatus) => {
@@ -1834,7 +2116,7 @@ ${itemsText}
    };
 
    // --- LOGIQUE FINANCE (RESTAURÉE) ---
-   const calculateFinance = () => {
+   const financeStats = useMemo(() => {
       const completed = propOrders.filter(o => o.status === 'delivered');
       const revenue = completed.reduce((sum, o) => sum + o.total, 0);
       const deliveryFees = completed.length * 15;
@@ -1847,10 +2129,10 @@ ${itemsText}
       }, {});
 
       return { revenue, deliveryFees, total, dailyStats, completedCount: completed.length, completedOrders: completed };
-   };
+   }, [propOrders]);
 
    const generateFinancePDF = () => {
-      const fin = calculateFinance();
+      const fin = financeStats;
       const doc = new jsPDF();
       const orangeColor = '#f97316';
 
@@ -2060,6 +2342,9 @@ ${itemsText}
                   label="Support Tiquettes"
                   badge={supportTickets.filter(t => t.status !== 'resolved').length || undefined}
                />
+               <div className="pt-4 mt-4 border-t border-slate-800">
+                  <NavItem active={showProfileModal} onClick={() => setShowProfileModal(true)} icon={<User size={20} />} label="Mon Profil" />
+               </div>
             </nav>
             <div className="p-4 border-t border-slate-800 space-y-2">
 
@@ -2076,7 +2361,12 @@ ${itemsText}
                   <Search className="text-slate-400" size={16} />
                   <input type="text" placeholder="Rechercher..." className="bg-transparent border-none outline-none text-sm w-full" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
                </div>
-               <div className="w-8 h-8 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-sm">A</div>
+               <button
+                  onClick={() => setShowProfileModal(true)}
+                  className="w-10 h-10 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-sm hover:scale-110 transition-transform active:scale-95"
+               >
+                  {currentAdmin?.username?.[0]?.toUpperCase() || 'A'}
+               </button>
             </header>
 
             <div className="flex-1 overflow-y-auto p-8 space-y-8 pb-32">
@@ -2155,21 +2445,49 @@ ${itemsText}
                {/* COMMANDES & HISTORIQUE */}
                {(activeTab === 'ORDERS' || activeTab === 'HISTORY') && (
                   <div className="space-y-6 animate-in slide-in-from-bottom-6 duration-500">
+                     {selectedOrderIds.length > 0 && (
+                        <div className="bg-slate-900 text-white p-4 rounded-3xl flex items-center justify-between shadow-lg animate-in fade-in slide-in-from-top-4">
+                           <div className="flex items-center gap-4 ml-4">
+                              <span className="text-sm font-bold">{selectedOrderIds.length} commande(s) sélectionnée(s)</span>
+                           </div>
+                           <div className="flex items-center gap-3">
+                              <button onClick={() => setSelectedOrderIds([])} className="px-4 py-2 text-xs font-bold uppercase tracking-wider hover:text-slate-300">Annuler</button>
+                              <button onClick={handleBulkDeleteOrders} className="flex items-center gap-2 px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all">
+                                 <Trash2 size={14} /> Supprimer la sélection
+                              </button>
+                           </div>
+                        </div>
+                     )}
                      <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
                         <table className="w-full text-left">
-                           <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                           <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
                               <tr>
-                                 <th className="px-8 py-5">ID</th>
-                                 <th className="px-8 py-5">Client</th>
-                                 <th className="px-8 py-5">Magasin</th>
-                                 <th className="px-8 py-5">Statut</th>
-                                 <th className="px-8 py-5">Livreur</th>
-                                 <th className="px-8 py-5 text-right">Actions</th>
+                                 <th className="px-8 py-6 w-10">
+                                    <input
+                                       type="checkbox"
+                                       checked={selectedOrderIds.length === paginatedOrders.length && paginatedOrders.length > 0}
+                                       onChange={handleSelectAllOrders}
+                                       className="w-4 h-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500"
+                                    />
+                                 </th>
+                                 <th className="px-8 py-6">ID</th>
+                                 <th className="px-8 py-6">Client</th>
+                                 <th className="px-8 py-6">Statut</th>
+                                 <th className="px-8 py-6">Livreur</th>
+                                 <th className="px-8 py-6 text-right">Actions</th>
                               </tr>
                            </thead>
                            <tbody className="divide-y text-sm">
                               {paginatedOrders.map(o => (
-                                 <tr key={o.id} className="hover:bg-slate-50 transition-colors">
+                                 <tr key={o.id} className={`hover:bg-slate-50 transition-colors ${selectedOrderIds.includes(o.id) ? 'bg-orange-50/50' : ''}`}>
+                                    <td className="px-8 py-5">
+                                       <input
+                                          type="checkbox"
+                                          checked={selectedOrderIds.includes(o.id)}
+                                          onChange={() => handleToggleOrderSelection(o.id)}
+                                          className="w-4 h-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500"
+                                       />
+                                    </td>
                                     <td className="px-8 py-5 font-black text-slate-400">#{o.id}</td>
                                     <td className="px-8 py-5">
                                        <div
@@ -2186,14 +2504,6 @@ ${itemsText}
                                              <span className="text-[10px] text-slate-400">{o.phone}</span>
                                           </div>
                                        </div>
-                                    </td>
-                                    <td className="px-8 py-5">
-                                       <button
-                                          onClick={() => setSelectedOrder(o)}
-                                          className="font-bold text-slate-700 hover:text-orange-600 transition-colors text-left"
-                                       >
-                                          {o.storeName}
-                                       </button>
                                     </td>
                                     <td className="px-8 py-5">
                                        <select
@@ -2224,7 +2534,8 @@ ${itemsText}
                                        </select>
                                     </td>
                                     <td className="px-8 py-5 text-right flex justify-end gap-2">
-                                       <button onClick={() => setSelectedOrder(o)} className="p-2.5 bg-slate-900 text-white rounded-xl"><Info size={16} /></button>
+                                       <button onClick={() => setSelectedOrder(o)} className="p-2.5 bg-slate-900 text-white rounded-xl hover:bg-slate-800 transition-colors" title="Détails"><Info size={16} /></button>
+                                       <button onClick={() => handleDeleteSingleOrder(o.id)} className="p-2.5 bg-red-50 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all" title="Supprimer"><Trash2 size={16} /></button>
                                     </td>
                                  </tr>
                               ))}
@@ -2303,15 +2614,15 @@ ${itemsText}
                         </button>
                      </div>
                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <StatCard label="Ventes Totales" value={`${calculateFinance().revenue} DH`} icon={<DollarSign size={24} />} color="bg-emerald-50 text-emerald-600" />
-                        <StatCard label="Livraisons Payées" value={`${calculateFinance().deliveryFees} DH`} icon={<Truck size={24} />} color="bg-blue-50 text-blue-600" />
-                        <StatCard label="Revenue Global" value={`${calculateFinance().total} DH`} icon={<TrendingUp size={24} />} color="bg-orange-50 text-orange-600" />
+                        <StatCard label="Ventes Totales" value={`${financeStats.revenue} DH`} icon={<DollarSign size={24} />} color="bg-emerald-50 text-emerald-600" />
+                        <StatCard label="Livraisons Payées" value={`${financeStats.deliveryFees} DH`} icon={<Truck size={24} />} color="bg-blue-50 text-blue-600" />
+                        <StatCard label="Revenue Global" value={`${financeStats.total} DH`} icon={<TrendingUp size={24} />} color="bg-orange-50 text-orange-600" />
                      </div>
 
                      <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden animate-in fade-in duration-700">
                         <div className="px-8 py-6 border-b border-slate-50 flex justify-between items-center">
                            <h4 className="font-black text-xs uppercase tracking-widest text-slate-800">Détails des Ventes (Livraisons Terminées)</h4>
-                           <span className="bg-emerald-50 text-emerald-600 px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-wider">{calculateFinance().completedCount} Commandes</span>
+                           <span className="bg-emerald-50 text-emerald-600 px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-wider">{financeStats.completedCount} Commandes</span>
                         </div>
                         <table className="w-full text-left">
                            <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
@@ -2325,16 +2636,11 @@ ${itemsText}
                               </tr>
                            </thead>
                            <tbody className="divide-y text-sm">
-                              {calculateFinance().completedOrders.map(o => (
+                              {financeStats.completedOrders.map(o => (
                                  <tr key={o.id} className="hover:bg-slate-50 transition-colors group">
                                     <td className="px-8 py-5 font-black text-slate-400 group-hover:text-slate-900 transition-colors">#{o.id}</td>
                                     <td className="px-8 py-5 font-bold text-slate-600">{new Date(o.timestamp).toLocaleDateString()}</td>
                                     <td className="px-8 py-5 font-bold text-slate-800">{o.customerName}</td>
-                                    <td className="px-8 py-5">
-                                       <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${o.paymentMethod === 'transfer' ? 'bg-purple-50 text-purple-600' : 'bg-slate-100 text-slate-600'}`}>
-                                          {o.paymentMethod === 'transfer' ? 'Virement' : 'Espèces'}
-                                       </span>
-                                    </td>
                                     <td className="px-8 py-5">
                                        {o.paymentMethod === 'transfer' && (o.paymentReceiptImage || o.payment_receipt_base64) ? (
                                           <button
@@ -2352,7 +2658,7 @@ ${itemsText}
                                     <td className="px-8 py-5 text-right font-black text-emerald-600">{o.total} DH</td>
                                  </tr>
                               ))}
-                              {calculateFinance().completedCount === 0 && (
+                              {financeStats.completedCount === 0 && (
                                  <tr>
                                     <td colSpan={6} className="px-8 py-20 text-center text-slate-400 font-bold italic">Aucune commande livrée pour le moment.</td>
                                  </tr>
@@ -2427,14 +2733,7 @@ ${itemsText}
                            <div className="h-[300px] w-full">
                               <ResponsiveContainer width="100%" height="100%">
                                  <BarChart
-                                    data={Object.entries(propOrders.reduce((acc, order) => {
-                                       const storeName = order.storeName || 'Inconnu';
-                                       acc[storeName] = (acc[storeName] || 0) + 1;
-                                       return acc;
-                                    }, {} as Record<string, number>))
-                                       .map(([name, count]) => ({ name, count }))
-                                       .sort((a, b) => b.count - a.count)
-                                       .slice(0, 5)}
+                                    data={topStores}
                                     layout="vertical"
                                     margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
                                  >
@@ -2454,17 +2753,9 @@ ${itemsText}
                                     />
                                     <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={20}>
                                        {
-                                          Object.entries(propOrders.reduce((acc, order) => {
-                                             const storeName = order.storeName || 'Inconnu';
-                                             acc[storeName] = (acc[storeName] || 0) + 1;
-                                             return acc;
-                                          }, {} as Record<string, number>))
-                                             .map(([name, count]) => ({ name, count }))
-                                             .sort((a, b) => b.count - a.count)
-                                             .slice(0, 5)
-                                             .map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899'][index % 5]} />
-                                             ))
+                                          topStores.map((entry, index) => (
+                                             <Cell key={`cell-${index}`} fill={['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899'][index % 5]} />
+                                          ))
                                        }
                                     </Bar>
                                  </BarChart>
@@ -2483,10 +2774,7 @@ ${itemsText}
                               <ResponsiveContainer width="100%" height="100%">
                                  <PieChart>
                                     <Pie
-                                       data={[
-                                          { name: 'Livrées', value: propOrders.filter(o => o.status === 'delivered').length },
-                                          { name: 'Incomplètes/Annulées', value: propOrders.filter(o => ['refused', 'unavailable', 'cancelled'].includes(o.status)).length }
-                                       ]}
+                                       data={successRateStats}
                                        cx="50%"
                                        cy="50%"
                                        innerRadius={60}
@@ -2526,16 +2814,7 @@ ${itemsText}
                            <div className="h-[300px] w-full">
                               <ResponsiveContainer width="100%" height="100%">
                                  <BarChart
-                                    data={Object.values(propOrders.reduce((acc, order) => {
-                                       const phone = order.phone || 'Inconnu';
-                                       if (!acc[phone]) {
-                                          acc[phone] = { name: order.customerName, count: 0 };
-                                       }
-                                       acc[phone].count += 1;
-                                       return acc;
-                                    }, {} as Record<string, { name: string, count: number }>))
-                                       .sort((a, b) => b.count - a.count)
-                                       .slice(0, 5)}
+                                    data={loyalClients}
                                     layout="vertical"
                                     margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
                                  >
@@ -2555,19 +2834,9 @@ ${itemsText}
                                     />
                                     <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={20}>
                                        {
-                                          Object.values(propOrders.reduce((acc, order) => {
-                                             const phone = order.phone || 'Inconnu';
-                                             if (!acc[phone]) {
-                                                acc[phone] = { name: order.customerName, count: 0 };
-                                             }
-                                             acc[phone].count += 1;
-                                             return acc;
-                                          }, {} as Record<string, { name: string, count: number }>))
-                                             .sort((a, b) => b.count - a.count)
-                                             .slice(0, 5)
-                                             .map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316'][index % 5]} />
-                                             ))
+                                          loyalClients.map((entry, index) => (
+                                             <Cell key={`cell-${index}`} fill={['#6366f1', '#8b5cf6', '#d946ef', '#ec4899', '#f43f5e'][index % 5]} />
+                                          ))
                                        }
                                     </Bar>
                                  </BarChart>
@@ -2834,6 +3103,7 @@ ${itemsText}
                                  <th className="px-8 py-5">Français</th>
                                  <th className="px-8 py-5">Arabe</th>
                                  <th className="px-8 py-5">Ordre</th>
+                                 <th className="px-8 py-5">Sous-Catégories</th>
                                  <th className="px-8 py-5 text-right">Actions</th>
                               </tr>
                            </thead>
@@ -2854,8 +3124,19 @@ ${itemsText}
                                     <td className="px-8 py-5 font-black text-slate-400">{cat.display_order}</td>
                                     <td className="px-8 py-5 text-right">
                                        <div className="flex justify-end gap-2">
-                                          <button onClick={() => { setEditingCategory(cat); setShowAddCategory(true); }} className="p-2 text-slate-400 hover:text-orange-600"><Edit3 size={16} /></button>
-                                          <button onClick={() => handleDeleteCategory(cat.id)} className="p-2 text-slate-400 hover:text-red-600"><Trash2 size={16} /></button>
+                                          <button
+                                             onClick={() => {
+                                                setEditingCategory(cat);
+                                                setShowAddSubCategory(true);
+                                             }}
+                                             className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-indigo-600 hover:text-white transition-all"
+                                             title="Gérer les sous-catégories"
+                                          >
+                                             <ListTree size={14} />
+                                             <span>Gérer</span>
+                                          </button>
+                                          <button onClick={() => { setEditingCategory(cat); setShowAddCategory(true); }} className="p-2 text-slate-400 hover:text-orange-600 transition-all hover:bg-orange-50 rounded-lg"><Edit3 size={16} /></button>
+                                          <button onClick={() => handleDeleteCategory(cat.id)} className="p-2 text-slate-400 hover:text-red-600 transition-all hover:bg-red-50 rounded-lg"><Trash2 size={16} /></button>
                                        </div>
                                     </td>
                                  </tr>
@@ -3318,79 +3599,44 @@ ${itemsText}
 
          {/* MODAL COMMANDE */}
          {selectedOrder && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-end">
+            <div className="fixed inset-0 z-[100] flex items-center justify-center">
                <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedOrder(null)}></div>
-               <div className="relative w-full max-w-2xl bg-white h-screen shadow-2xl overflow-y-auto pb-32">
-                  <header className="sticky top-0 bg-white/80 backdrop-blur-md z-10 px-8 py-6 border-b flex justify-between items-center">
-                     <h3 className="text-xl font-black uppercase">Commande #{selectedOrder.id}</h3>
-                     <div className="flex items-center gap-2">
-                        <button onClick={() => generateOrderPDF(selectedOrder)} className="p-3 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-600 hover:text-white transition-all"><Download size={20} /></button>
-                        <button onClick={() => handleShareOrder(selectedOrder)} className="p-3 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-600 hover:text-white transition-all"><Share2 size={20} /></button>
-                        <button onClick={() => setSelectedOrder(null)} className="p-3 bg-slate-100 rounded-full"><X size={20} /></button>
+               <div className="relative w-full h-screen bg-white shadow-2xl overflow-y-auto">
+                  <header className="sticky top-0 bg-white/90 backdrop-blur-md z-10 px-12 py-8 border-b flex justify-between items-center">
+                     <div className="flex items-center gap-4">
+                        <div className="p-3 bg-orange-100 text-orange-600 rounded-2xl">
+                           <Package size={24} />
+                        </div>
+                        <div>
+                           <h3 className="text-2xl font-black uppercase tracking-tight">Détails de la Commande</h3>
+                           <p className="text-sm font-bold text-slate-400 font-mono">#{selectedOrder.id}</p>
+                        </div>
+                     </div>
+                     <div className="flex items-center gap-3">
+                        <button onClick={() => generateOrderPDF(selectedOrder)} className="flex items-center gap-2 px-6 py-3 bg-emerald-50 text-emerald-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-emerald-600 hover:text-white transition-all shadow-sm">
+                           <Download size={18} /> Télécharger PDF
+                        </button>
+                        <button onClick={() => handleShareOrder(selectedOrder)} className="flex items-center gap-2 px-6 py-3 bg-blue-50 text-blue-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-blue-600 hover:text-white transition-all shadow-sm">
+                           <Share2 size={18} /> Partager
+                        </button>
+                        <div className="w-px h-8 bg-slate-200 mx-2"></div>
+                        <button onClick={() => setSelectedOrder(null)} className="p-3 bg-slate-100 text-slate-400 rounded-2xl hover:bg-slate-200 hover:text-slate-600 transition-all"><X size={24} /></button>
                      </div>
                   </header>
-                  <div className="p-8 space-y-10">
-                     <div className="grid grid-cols-2 gap-6">
-                        <section className="bg-slate-50 p-6 rounded-[2.5rem] space-y-2">
-                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Informations Client</p>
-                           <p className="font-black text-lg">{selectedOrder.customerName}</p>
-                           <p className="text-sm text-slate-500">{selectedOrder.phone}</p>
-                        </section>
-                        <section className="bg-slate-50 p-6 rounded-[2.5rem] space-y-2">
-                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Évaluation</p>
-                           <div className="flex flex-col gap-3">
-                              {selectedOrder.storeRating && (
-                                 <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                       <StoreIcon size={12} className="text-orange-500" />
-                                       <span className="text-[9px] font-black text-slate-500 uppercase">Magasin</span>
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                       {[1, 2, 3, 4, 5].map((star) => (
-                                          <Star
-                                             key={star}
-                                             size={14}
-                                             fill={star <= selectedOrder.storeRating! ? "#f97316" : "none"}
-                                             className={star <= selectedOrder.storeRating! ? "text-orange-500" : "text-slate-300"}
-                                          />
-                                       ))}
-                                       <span className="text-[10px] font-black text-orange-600 ml-1">{selectedOrder.storeRating}/5</span>
-                                    </div>
-                                 </div>
-                              )}
-                              <div className="space-y-1">
-                                 <div className="flex items-center gap-2">
-                                    <Truck size={12} className="text-blue-500" />
-                                    <span className="text-[9px] font-black text-slate-500 uppercase">Livreur</span>
-                                 </div>
-                                 <div className="flex items-center gap-1">
-                                    {[1, 2, 3, 4, 5].map((star) => (
-                                       <Star
-                                          key={star}
-                                          size={14}
-                                          fill={star <= (selectedOrder.driverRating || 0) ? "#eab308" : "none"}
-                                          className={`cursor-pointer transition-transform hover:scale-110 ${star <= (selectedOrder.driverRating || 0) ? "text-yellow-500" : "text-slate-300"}`}
-                                          onClick={() => handleUpdateDriverRating(selectedOrder.id, star)}
-                                       />
-                                    ))}
-                                    <span className="text-[10px] font-black text-yellow-600 ml-1">{selectedOrder.driverRating || 0}/5</span>
-                                 </div>
-                              </div>
-                              {!selectedOrder.storeRating && (
-                                 <p className="text-xs text-slate-400 italic">Aucune note magasin</p>
-                              )}
+                  <div className="p-12 max-w-[1400px] mx-auto space-y-12">
+                     {/* Row 1: Client & Evaluation & Status */}
+                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Status Control */}
+                        <section className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-900 shadow-sm space-y-4">
+                           <div className="flex items-center gap-2 text-slate-400">
+                              <BarChart3 size={16} />
+                              <p className="text-[10px] font-black uppercase tracking-widest">Statut de la Livraison</p>
                            </div>
-                        </section>
-                     </div>
-
-                     <div className="grid grid-cols-2 gap-6">
-                        <div className="bg-slate-50 p-6 rounded-[2.5rem] flex items-center justify-between">
-                           <div className="flex flex-col gap-1 w-full">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Statut</p>
+                           <div className="space-y-4">
                               <select
                                  value={selectedOrder.status}
                                  onChange={(e) => handleUpdateOrderStatus(selectedOrder.id, e.target.value as OrderStatus)}
-                                 className="bg-transparent font-black text-sm outline-none cursor-pointer text-slate-800 w-full"
+                                 className="w-full bg-slate-50 border-2 border-transparent focus:border-orange-500 rounded-2xl px-6 py-4 font-black transition-all outline-none appearance-none cursor-pointer"
                               >
                                  <option value="pending">En attente</option>
                                  <option value="verification">En vérification</option>
@@ -3401,144 +3647,345 @@ ${itemsText}
                                  <option value="refused">Refusée</option>
                                  <option value="unavailable">Indisponible</option>
                               </select>
+                              <div className={`p-4 rounded-2xl flex items-center gap-3 ${selectedOrder.status === 'delivered' ? 'bg-emerald-50 text-emerald-600' : 'bg-orange-50 text-orange-600'}`}>
+                                 {selectedOrder.status === 'delivered' ? <CheckCircle2 size={20} /> : <Clock size={20} />}
+                                 <span className="text-xs font-black uppercase tracking-widest">Actuellement : {selectedOrder.status}</span>
+                              </div>
                            </div>
-                        </div>
+                        </section>
 
-                        <div className="bg-slate-50 p-6 rounded-[2.5rem] flex items-center justify-between">
-                           <div className="flex flex-col gap-1 w-full">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Livreur Assigné</p>
+                        {/* Driver Assignment */}
+                        <section className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-900 shadow-sm space-y-4">
+                           <div className="flex items-center gap-2 text-slate-400">
+                              <Bike size={16} />
+                              <p className="text-[10px] font-black uppercase tracking-widest">Assignation Livreur</p>
+                           </div>
+                           <div className="space-y-4">
                               <select
                                  value={selectedOrder.assignedDriverId || ""}
                                  onChange={(e) => handleAssignDriver(selectedOrder.id, e.target.value)}
-                                 className="bg-transparent font-black text-sm outline-none cursor-pointer text-slate-800 w-full"
+                                 className="w-full bg-slate-50 border-2 border-transparent focus:border-blue-500 rounded-2xl px-6 py-4 font-black transition-all outline-none appearance-none cursor-pointer"
                               >
                                  <option value="">Non assigné</option>
                                  {drivers.map(d => (
                                     <option key={d.id} value={d.id}>{d.fullName}</option>
                                  ))}
                               </select>
-                           </div>
-                        </div>
-                     </div>
-
-                     {/* Timeline d'historique */}
-                     {selectedOrder.statusHistory && (selectedOrder.statusHistory as any[]).length > 0 && (
-                        <div className="bg-slate-50/50 p-6 rounded-3xl border border-slate-100">
-                           <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-4 flex items-center gap-2">
-                              <Clock size={12} /> Suivi Statut
-                           </h4>
-                           <div className="space-y-4">
-                              {(selectedOrder.statusHistory as any[]).map((step: any, i: number) => (
-                                 <div key={i} className="flex gap-4 items-start relative pb-4 last:pb-0">
-                                    {i < (selectedOrder.statusHistory as any[]).length - 1 && (
-                                       <div className="absolute left-2.5 top-6 bottom-0 w-px bg-slate-200"></div>
-                                    )}
-                                    <div className="w-5 h-5 flex-shrink-0 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold z-10">
-                                       {i + 1}
-                                    </div>
-                                    <div className="flex flex-col">
-                                       <span className="text-xs font-black uppercase tracking-tight">{step.status}</span>
-                                       <span className="text-[10px] text-slate-400">{new Date(step.timestamp).toLocaleString()}</span>
-                                    </div>
+                              {selectedOrder.assignedDriverId ? (
+                                 <div className="p-4 bg-blue-50 text-blue-600 rounded-2xl flex items-center gap-3">
+                                    <UserCheck size={20} />
+                                    <span className="text-xs font-black uppercase tracking-widest">Livreur Assigné</span>
                                  </div>
-                              ))}
-                           </div>
-                        </div>
-                     )}
-
-                     <div className="bg-slate-50 p-6 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-4">
-                        <div className="flex items-center justify-between">
-                           <div className="flex items-center gap-2">
-                              <Info size={16} className="text-blue-500" />
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Description / Notes de la Commande</p>
-                           </div>
-                           <button
-                              onClick={() => handleUpdateOrderNotes(selectedOrder.id, editingOrderNotes)}
-                              className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2"
-                           >
-                              <Save size={14} /> Enregistrer
-                           </button>
-                        </div>
-                        <textarea
-                           value={editingOrderNotes}
-                           onChange={(e) => setEditingOrderNotes(e.target.value)}
-                           placeholder="Ajouter une description ou des notes internes..."
-                           className="w-full bg-white border border-slate-200 rounded-2xl p-4 text-sm font-bold text-slate-700 focus:border-blue-500 outline-none transition-all min-h-[120px] resize-none shadow-inner"
-                        />
-                     </div>
-
-                     {/* Prescription Image */}
-                     {selectedOrder.prescription_base64 && (
-                        <div className="bg-blue-50 p-6 rounded-[2rem] border-l-4 border-blue-500">
-                           <div className="flex items-center justify-between mb-4">
-                              <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest flex items-center gap-2">
-                                 <ImageIcon size={14} /> Ordonnance / Prescription
-                              </p>
-                              <button
-                                 onClick={() => {
-                                    const link = document.createElement('a');
-                                    let imgData = selectedOrder.prescription_base64!;
-                                    if (!imgData.startsWith('data:')) {
-                                       imgData = `data:image/jpeg;base64,${imgData}`;
-                                    }
-                                    link.href = imgData;
-                                    link.download = `Prescription_Commande_${selectedOrder.id}.jpg`;
-                                    link.click();
-                                 }}
-                                 className="flex items-center gap-2 bg-blue-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-colors"
-                              >
-                                 <Download size={14} /> Télécharger
-                              </button>
-                           </div>
-                           <div
-                              onClick={() => setViewingImage(selectedOrder.prescription_base64!)}
-                              className="cursor-pointer hover:opacity-80 transition-opacity"
-                           >
-                              {renderMediaThumbnail(selectedOrder.prescription_base64, "w-full h-48")}
-                           </div>
-                           <p className="text-[10px] text-slate-500 mt-2 italic">Cliquez pour agrandir</p>
-                        </div>
-                     )}
-
-                     {/* Payment Receipt Image */}
-                     {selectedOrder.payment_receipt_base64 && (
-                        <div className="bg-emerald-50 p-6 rounded-[2rem] border-l-4 border-emerald-500">
-                           <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                              <Receipt size={14} /> Reçu de Paiement
-                           </p>
-                           <div
-                              onClick={() => setViewingImage(selectedOrder.payment_receipt_base64!)}
-                              className="cursor-pointer hover:opacity-80 transition-opacity"
-                           >
-                              {renderMediaThumbnail(selectedOrder.payment_receipt_base64, "w-full h-48")}
-                           </div>
-                           <p className="text-[10px] text-slate-500 mt-2 italic">Cliquez pour agrandir</p>
-                        </div>
-                     )}
-
-                     <div className="space-y-4">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Articles Commandés</h4>
-                        {selectedOrder.items.map((it, i) => (
-                           <div key={i} className="flex flex-col p-4 border rounded-2xl bg-white hover:border-orange-200 transition-colors">
-                              <div className="flex justify-between w-full">
-                                 <span className="font-bold">{it.quantity}x {it.product?.name || 'Produit'}</span>
-                                 <span className="font-black text-orange-600">{(it.product?.price || 0) * it.quantity} DH</span>
-                              </div>
-                              {it.note && (
-                                 <div className="mt-2 text-xs bg-slate-50 p-2 rounded-lg text-slate-500 border border-slate-100 italic">
-                                    Note/Option: {it.note}
+                              ) : (
+                                 <div className="p-4 bg-slate-50 text-slate-400 rounded-2xl flex items-center gap-3 italic">
+                                    <UserMinus size={20} />
+                                    <span className="text-xs font-bold">Aucun livreur pour le moment</span>
                                  </div>
                               )}
                            </div>
-                        ))}
+                        </section>
+
+                        {/* Client Info */}
+                        <section className="bg-slate-900 text-white p-8 rounded-[2.5rem] shadow-xl shadow-slate-200 space-y-6">
+                           <div className="flex items-center gap-2 opacity-50">
+                              <User size={16} />
+                              <p className="text-[10px] font-black uppercase tracking-widest">Client Destinataire</p>
+                           </div>
+                           <div className="space-y-4">
+                              <div>
+                                 <p className="text-2xl font-black leading-tight">{selectedOrder.customerName}</p>
+                                 <p className="text-orange-500 font-mono font-bold mt-1">{selectedOrder.phone}</p>
+                              </div>
+                              <div className="flex gap-2">
+                                 <button onClick={() => copyToClipboard(selectedOrder.phone)} className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-colors">
+                                    <Copy size={16} />
+                                 </button>
+                                 <a href={`tel:${selectedOrder.phone}`} className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-colors">
+                                    <Phone size={16} />
+                                 </a>
+                                 <a href={`https://wa.me/${(selectedOrder.phone || "").replace(/\+/g, '')}`} target="_blank" className="p-2 bg-emerald-500/20 hover:bg-emerald-500/40 rounded-xl transition-colors text-emerald-400">
+                                    <MessageSquare size={16} />
+                                 </a>
+                              </div>
+                           </div>
+                        </section>
+
+                        {/* Delivery Note Section */}
+                        {selectedOrder.deliveryNote && (
+                           <section className="bg-gradient-to-br from-blue-50 to-indigo-50 p-8 rounded-[2.5rem] border-2 border-slate-900 shadow-lg shadow-blue-100/50 space-y-4">
+                              <div className="flex items-center gap-2 text-blue-600">
+                                 <MapPin size={16} />
+                                 <p className="text-[10px] font-black uppercase tracking-widest">Note de Livraison</p>
+                              </div>
+                              <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl border border-blue-100/50">
+                                 <p className="text-sm font-bold text-blue-950 leading-relaxed whitespace-pre-wrap break-words">
+                                    {selectedOrder.deliveryNote}
+                                 </p>
+                              </div>
+                           </section>
+                        )}
                      </div>
 
-                     <div className="bg-slate-900 p-8 rounded-[2rem] flex justify-between items-center text-white shadow-xl shadow-slate-900/20">
-                        <div className="flex flex-col">
-                           <span className="font-black uppercase text-[10px] opacity-50 tracking-widest">Total Global</span>
-                           <span className="text-[10px] opacity-40 italic">Incluant 15 DH de livraison</span>
+                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Timeline d'historique */}
+                        <div className="lg:col-span-1 space-y-6">
+                           <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-900 shadow-sm h-full">
+                              <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-8 flex items-center gap-2">
+                                 <Clock size={14} /> Historique du Suivi
+                              </h4>
+                              {selectedOrder.statusHistory && (selectedOrder.statusHistory as any[]).length > 0 ? (
+                                 <div className="space-y-6">
+                                    {(selectedOrder.statusHistory as any[]).map((step: any, i: number) => (
+                                       <div key={i} className="flex gap-6 items-start relative pb-6 last:pb-0">
+                                          {i < (selectedOrder.statusHistory as any[]).length - 1 && (
+                                             <div className="absolute left-3 top-8 bottom-0 w-px bg-slate-100"></div>
+                                          )}
+                                          <div className={`w-6 h-6 flex-shrink-0 rounded-full flex items-center justify-center text-[10px] font-black z-10 ${i === 0 ? 'bg-orange-500 text-white ring-4 ring-orange-100' : 'bg-slate-100 text-slate-400'}`}>
+                                             {i + 1}
+                                          </div>
+                                          <div className="flex flex-col gap-1">
+                                             <span className={`text-xs font-black uppercase tracking-tight ${i === 0 ? 'text-slate-900' : 'text-slate-400'}`}>{step.status}</span>
+                                             <span className="text-[10px] text-slate-400 font-bold">{new Date(step.timestamp).toLocaleString('fr-FR')}</span>
+                                          </div>
+                                       </div>
+                                    ))}
+                                 </div>
+                              ) : (
+                                 <div className="flex flex-col items-center justify-center py-12 text-slate-300">
+                                    <HistoryIcon size={48} className="opacity-20 mb-4" />
+                                    <p className="text-xs font-bold italic">Aucun historique disponible</p>
+                                 </div>
+                              )}
+                           </div>
                         </div>
-                        <span className="text-3xl font-black text-orange-500">{selectedOrder.total + 15} DH</span>
+
+                        {/* Order Notes & Ratings */}
+                        <div className="lg:col-span-2 space-y-8">
+                           {/* Evaluation */}
+                           <section className="bg-slate-50 p-8 rounded-[2.5rem] border-2 border-slate-900">
+                              <div className="space-y-4">
+                                 <div className="flex items-center gap-2 text-slate-400">
+                                    <Truck size={16} />
+                                    <p className="text-[10px] font-black uppercase tracking-widest">Note Livreur (Admin)</p>
+                                 </div>
+                                 <div className="flex items-center gap-2">
+                                    {[1, 2, 3, 4, 5].map((star) => (
+                                       <Star
+                                          key={star}
+                                          size={24}
+                                          fill={star <= (selectedOrder.driverRating || 0) ? "#eab308" : "none"}
+                                          className={`cursor-pointer transition-all hover:scale-125 ${star <= (selectedOrder.driverRating || 0) ? "text-yellow-500" : "text-slate-200"}`}
+                                          onClick={() => handleUpdateDriverRating(selectedOrder.id, star)}
+                                       />
+                                    ))}
+                                    <span className="text-xl font-black text-slate-800 ml-2">{selectedOrder.driverRating || 0}/5</span>
+                                 </div>
+                              </div>
+                           </section>
+
+                           {/* Notes Area */}
+                           <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-900 shadow-sm space-y-4">
+                              <div className="flex items-center justify-between">
+                                 <div className="flex items-center gap-2 text-slate-400">
+                                    <Edit3 size={16} />
+                                    <p className="text-[10px] font-black uppercase tracking-widest">NOTE ADMIN</p>
+                                 </div>
+                                 <button
+                                    onClick={() => handleUpdateOrderNotes(selectedOrder.id, editingOrderNotes)}
+                                    className="bg-slate-900 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition-all flex items-center gap-2 shadow-lg shadow-slate-200"
+                                 >
+                                    <Save size={14} /> Enregistrer les Notes
+                                 </button>
+                              </div>
+                              <textarea
+                                 value={editingOrderNotes}
+                                 onChange={(e) => setEditingOrderNotes(e.target.value)}
+                                 placeholder="Saisissez ici les informations complémentaires ou notes de suivi..."
+                                 className="w-full bg-slate-50 border-2 border-transparent focus:border-slate-200 rounded-3xl p-6 text-sm font-bold text-slate-700 outline-none transition-all min-h-[160px] resize-none shadow-inner"
+                              />
+                           </div>
+                        </div>
+                     </div>
+
+                     {/* Media Section (Full Width) */}
+                     <div className="space-y-8">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                           <ImageIcon size={14} /> Pièces Jointes & Preuves
+                        </h4>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                           {/* Prescription Image */}
+                           {selectedOrder.prescription_base64 && (
+                              <div className="bg-blue-50/50 p-8 rounded-[2.5rem] border border-blue-100 flex flex-col gap-6">
+                                 <div className="flex items-center justify-between">
+                                    <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Ordonnance</p>
+                                    <button
+                                       onClick={() => {
+                                          const link = document.createElement('a');
+                                          let imgData = selectedOrder.prescription_base64!;
+                                          if (!imgData.startsWith('data:')) imgData = `data:image/jpeg;base64,${imgData}`;
+                                          link.href = imgData;
+                                          link.download = `Prescription_Commande_${selectedOrder.id}.jpg`;
+                                          link.click();
+                                       }}
+                                       className="p-2 bg-white text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                                    >
+                                       <Download size={14} />
+                                    </button>
+                                 </div>
+                                 <div
+                                    onClick={() => setViewingImage(selectedOrder.prescription_base64!)}
+                                    className="cursor-pointer hover:scale-[1.02] transition-transform rounded-2xl overflow-hidden border-2 border-white shadow-lg"
+                                 >
+                                    {renderMediaThumbnail(selectedOrder.prescription_base64, "w-full h-56")}
+                                 </div>
+                              </div>
+                           )}
+
+                           {/* Payment Receipt Image */}
+                           {selectedOrder.payment_receipt_base64 && (
+                              <div className="bg-emerald-50/50 p-8 rounded-[2.5rem] border border-emerald-100 flex flex-col gap-6">
+                                 <div className="flex items-center justify-between">
+                                    <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Reçu de Paiement</p>
+                                    <button
+                                       onClick={() => {
+                                          const link = document.createElement('a');
+                                          let imgData = selectedOrder.payment_receipt_base64!;
+                                          if (!imgData.startsWith('data:')) imgData = `data:image/jpeg;base64,${imgData}`;
+                                          link.href = imgData;
+                                          link.download = `Recu_Commande_${selectedOrder.id}.jpg`;
+                                          link.click();
+                                       }}
+                                       className="p-2 bg-white text-emerald-600 rounded-xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm"
+                                    >
+                                       <Download size={14} />
+                                    </button>
+                                 </div>
+                                 <div
+                                    onClick={() => setViewingImage(selectedOrder.payment_receipt_base64!)}
+                                    className="cursor-pointer hover:scale-[1.02] transition-transform rounded-2xl overflow-hidden border-2 border-white shadow-lg"
+                                 >
+                                    {renderMediaThumbnail(selectedOrder.payment_receipt_base64, "w-full h-56")}
+                                 </div>
+                              </div>
+                           )}
+                           {!selectedOrder.prescription_base64 && !selectedOrder.payment_receipt_base64 && (
+                              <div className="md:col-span-3 py-16 flex flex-col items-center justify-center bg-slate-50 rounded-[2.5rem] border border-dashed border-slate-200 text-slate-300">
+                                 <ImageIcon size={48} className="opacity-10 mb-4" />
+                                 <p className="text-sm font-bold italic">Aucune pièce jointe</p>
+                              </div>
+                           )}
+                        </div>
+                     </div>
+
+                     {/* Items List Section (Expanded) */}
+                     <div className="space-y-8">
+                        <div className="flex items-center justify-between">
+                           <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                              <ShoppingBag size={14} /> Liste des Articles ({selectedOrder.items.length})
+                           </h4>
+                           <span className="px-6 py-2 bg-orange-500 text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg shadow-orange-200">
+                              Total Articles: {selectedOrder.items.reduce((acc, it) => acc + (it.quantity || 1), 0)}
+                           </span>
+                        </div>
+                        <div className="bg-white rounded-[3rem] border-2 border-slate-900 overflow-hidden shadow-xl shadow-slate-100/50">
+                           <table className="w-full text-left">
+                              <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                                 <tr>
+                                    <th className="px-10 py-6">Illustration & Désignation</th>
+                                    <th className="px-10 py-6">Établissement</th>
+                                    <th className="px-10 py-6 text-right">Prix Unitaire</th>
+                                    <th className="px-10 py-6 text-right">Total Ligne</th>
+                                 </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-50">
+                                 {selectedOrder.items.map((it, i) => (
+                                    <tr key={i} className="group hover:bg-slate-50/50 transition-all duration-300">
+                                       <td className="px-10 py-8">
+                                          <div className="flex items-center gap-6">
+                                             {it.image_base64 ? (
+                                                <div
+                                                   onClick={() => setViewingImage(it.image_base64!)}
+                                                   className="w-24 h-24 rounded-3xl overflow-hidden border-2 border-white shadow-xl cursor-pointer hover:scale-110 active:scale-95 transition-all ring-1 ring-slate-100 bg-white"
+                                                >
+                                                   {renderMediaThumbnail(it.image_base64, "w-full h-full")}
+                                                </div>
+                                             ) : (
+                                                <div className="w-24 h-24 rounded-3xl bg-slate-50 flex items-center justify-center text-slate-200 border-2 border-dashed border-slate-100">
+                                                   <Box size={32} />
+                                                </div>
+                                             )}
+                                             <div className="space-y-2">
+                                                <p className="font-black text-slate-900 text-lg leading-tight tracking-tight">
+                                                   {it.productName || it.product?.name || 'Produit sans nom'}
+                                                </p>
+                                                {it.note && (
+                                                   <div className="mt-4 p-4 bg-orange-50/50 rounded-2xl border border-orange-100/50 relative overflow-hidden group/note">
+                                                      <div className="absolute top-0 left-0 w-1 h-full bg-orange-400 opacity-20 group-hover/note:opacity-50 transition-opacity" />
+                                                      <div className="flex items-start gap-3">
+                                                         <Info size={14} className="text-orange-500 shrink-0 mt-0.5" />
+                                                         <div className="space-y-1">
+                                                            <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Consigne Client</p>
+                                                            <p className="text-sm text-orange-950 font-bold leading-relaxed whitespace-pre-wrap break-words">
+                                                               {it.note}
+                                                            </p>
+                                                         </div>
+                                                      </div>
+                                                   </div>
+                                                )}
+                                             </div>
+                                          </div>
+                                       </td>
+                                       <td className="px-10 py-8">
+                                          <span className="px-4 py-1.5 bg-slate-100 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-200/50">
+                                             {it.storeName || 'Non spécifié'}
+                                          </span>
+                                       </td>
+                                       <td className="px-10 py-8 text-right">
+                                          <p className="text-base font-bold text-slate-500">{(it.price || it.product?.price || 0).toFixed(2)}</p>
+                                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">DH / Unité</p>
+                                       </td>
+                                       <td className="px-10 py-8 text-right">
+                                          <p className="text-xl font-black text-orange-600">
+                                             {((it.quantity || 1) * (it.price || it.product?.price || 0)).toFixed(2)}
+                                          </p>
+                                          <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">DH Total</p>
+                                       </td>
+                                    </tr>
+                                 ))}
+                              </tbody>
+                           </table>
+                        </div>
+                     </div>
+
+                     {/* Footer Summary */}
+                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                        <div className="bg-slate-50 p-8 rounded-[2.5rem] border-2 border-slate-900 space-y-2">
+                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Sous-total Produits</p>
+                           <p className="text-2xl font-black text-slate-800 text-center">{(selectedOrder.total || 0).toFixed(2)} DH</p>
+                        </div>
+                        <div className="bg-slate-50 p-8 rounded-[2.5rem] border-2 border-slate-900 space-y-2">
+                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Frais de Livraison</p>
+                           <p className="text-2xl font-black text-slate-800 text-center">15.00 DH</p>
+                        </div>
+                        <div className="bg-slate-50 p-8 rounded-[2.5rem] border-2 border-slate-900 space-y-2">
+                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Méthode de Paiement</p>
+                           <div className="flex items-center justify-center gap-2">
+                              <CreditCard size={20} className="text-blue-500" />
+                              <p className="text-2xl font-black text-slate-800">{selectedOrder.paymentMethod === 'transfer' ? 'Virement' : 'Espèces'}</p>
+                           </div>
+                        </div>
+                        <div className="bg-orange-500 p-8 rounded-[2.5rem] shadow-xl shadow-orange-100 space-y-2">
+                           <p className="text-[10px] font-black text-white/60 uppercase tracking-widest text-center">Total Final</p>
+                           <p className="text-3xl font-black text-white text-center">{(selectedOrder.total_final || (selectedOrder.total + 15)).toFixed(2)} DH</p>
+                        </div>
+                     </div>
+
+                     {/* Placeholder for Future Options */}
+                     <div className="pt-8 border-t border-slate-100 opacity-20 hover:opacity-100 transition-opacity">
+                        <div className="flex flex-col items-center gap-4 py-8">
+                           <div className="w-16 h-1 bg-slate-100 rounded-full"></div>
+                           <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.2em]">Espace Réservé : Actions Administratives Futures</p>
+                        </div>
                      </div>
                   </div>
                </div>
@@ -3818,12 +4265,37 @@ ${itemsText}
                            </div>
                            <div className="space-y-1">
                               <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Catégorie</label>
-                              <select name="category_id" defaultValue={editingStore?.category_id} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all appearance-none cursor-pointer">
+                              <select
+                                 name="category_id"
+                                 defaultValue={editingStore?.category_id}
+                                 required
+                                 className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all appearance-none cursor-pointer"
+                                 onChange={(e) => setEditingStore(prev => prev ? { ...prev, category_id: e.target.value } : null)}
+                              >
+                                 <option value="">Sélectionner une catégorie</option>
                                  {dbCategories.map((c: any) => (
                                     <option key={c.id} value={c.id}>{c.name_fr}</option>
                                  ))}
                               </select>
                            </div>
+                        </div>
+                        <div className="space-y-1">
+                           <label className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Sous-Catégorie</label>
+                           <select
+                              name="sub_category"
+                              defaultValue={editingStore?.sub_category}
+                              className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all appearance-none cursor-pointer"
+                           >
+                              <option value="">Aucune</option>
+                              {/* Legacy Support: sub_categories array in cat table */}
+                              {dbCategories.find(c => c.id === (editingStore?.category_id))?.sub_categories?.map((sc: string) => (
+                                 <option key={sc} value={sc}>{sc} (Legacy)</option>
+                              ))}
+                              {/* Relational Support: sub_categories table */}
+                              {propSubCategories.filter(sc => sc.category_id === editingStore?.category_id).map(sc => (
+                                 <option key={sc.id} value={sc.name}>{sc.name}</option>
+                              ))}
+                           </select>
                         </div>
                         <div className="grid grid-cols-2 gap-4">
                            <div className="space-y-1">
@@ -3971,6 +4443,15 @@ ${itemsText}
                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nom EN</label>
                               <input name="name_en" defaultValue={editingCategory?.name_en} required className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all" />
                            </div>
+                        </div>
+                        <div className="space-y-1">
+                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sous-catégories (séparées par des virgules)</label>
+                           <input
+                              name="sub_categories"
+                              defaultValue={editingCategory?.sub_categories?.join(', ')}
+                              placeholder="ex: Sushi, Pizza, Burger"
+                              className="w-full bg-slate-50 border-transparent focus:border-orange-500 border-2 outline-none rounded-2xl p-4 font-bold transition-all"
+                           />
                         </div>
                         <div className="space-y-4">
                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Image de la Catégorie</label>
@@ -4162,10 +4643,73 @@ ${itemsText}
             </div>
          )}
 
+         {/* MODAL MANAGE SUB-CATEGORIES */}
+         {showAddSubCategory && editingCategory && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => { setShowAddSubCategory(false); setEditingCategory(null); }}></div>
+               <div className="relative bg-white w-full max-w-lg rounded-[3rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+                  <header className="p-8 border-b flex justify-between items-center bg-indigo-50">
+                     <div>
+                        <h3 className="text-xl font-black uppercase text-indigo-900">Sous-Catégories</h3>
+                        <p className="text-[10px] text-indigo-600 font-bold uppercase mt-1">Catégorie : {editingCategory.name_fr}</p>
+                     </div>
+                     <button onClick={() => { setShowAddSubCategory(false); setEditingCategory(null); }} className="p-2 bg-white rounded-full shadow-sm hover:bg-slate-50 transition-colors"><X size={20} /></button>
+                  </header>
+
+                  <div className="p-8 space-y-6">
+                     {/* Add New Sub-Category Form */}
+                     <form onSubmit={handleCreateSubCategory} className="flex gap-2">
+                        <input type="hidden" name="category_id" value={editingCategory.id} />
+                        <input
+                           name="name"
+                           placeholder="Nouvelle sous-catégorie..."
+                           required
+                           className="flex-1 bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl p-4 font-bold transition-all"
+                        />
+                        <button type="submit" className="bg-indigo-600 text-white p-4 rounded-2xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100 active:scale-95">
+                           <Plus size={24} />
+                        </button>
+                     </form>
+
+                     {/* List of Sub-Categories */}
+                     <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sous-catégories existantes</h4>
+                        {propSubCategories.filter(sc => sc.category_id === editingCategory.id).length === 0 ? (
+                           <div className="text-center py-12 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                              <p className="text-xs font-bold text-slate-400 italic">Aucune sous-catégorie pour le moment</p>
+                           </div>
+                        ) : (
+                           propSubCategories.filter(sc => sc.category_id === editingCategory.id).map(sc => (
+                              <div key={sc.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-indigo-100 hover:bg-white transition-all">
+                                 <span className="font-bold text-slate-700">{sc.name}</span>
+                                 <button
+                                    onClick={() => handleDeleteSubCategory(sc.id)}
+                                    className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                 >
+                                    <Trash2 size={16} />
+                                 </button>
+                              </div>
+                           ))
+                        )}
+                     </div>
+                  </div>
+               </div>
+            </div>
+         )}
+
          {/* LIGHTBOX IMAGE WITH ZOOM */}
          {
             viewingImage && <ImageLightbox imageUrl={viewingImage} onClose={() => setViewingImage(null)} />
          }
+
+         {/* ADMIN PROFILE MODAL */}
+         {showProfileModal && (
+            <AdminProfileModal
+               admin={currentAdmin}
+               onClose={() => setShowProfileModal(false)}
+               onLogout={onLogout}
+            />
+         )}
       </div>
    );
 };
@@ -4180,7 +4724,6 @@ const NavItem: React.FC<{ active: boolean; onClick: () => void; icon: React.Reac
       {badge !== undefined && badge > 0 && <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${active ? 'bg-white text-orange-500' : 'bg-slate-800 text-slate-400'}`}>{badge}</span>}
    </button>
 );
-
 const StatCard: React.FC<{ label: string; value: string | number; icon: React.ReactNode; color: string }> = ({ label, value, icon, color }) => (
    <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all group overflow-hidden relative">
       <div className={`absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-10 group-hover:scale-150 transition-transform duration-700 ${color.split(' ')[0]}`}></div>
@@ -4189,6 +4732,59 @@ const StatCard: React.FC<{ label: string; value: string | number; icon: React.Re
          <div>
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-2">{label}</p>
             <h3 className="text-3xl font-black text-slate-800 tracking-tighter">{value}</h3>
+         </div>
+      </div>
+   </div>
+);
+
+const AdminProfileModal: React.FC<{ admin: any; onClose: () => void; onLogout: () => void }> = ({ admin, onClose, onLogout }) => (
+   <div className="fixed inset-0 z-[150] flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose}></div>
+      <div className="relative bg-white w-full max-w-md rounded-[3.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+         <header className="p-10 border-b flex justify-between items-center bg-orange-50">
+            <div className="flex items-center gap-4">
+               <div className="w-14 h-14 bg-orange-600 rounded-3xl flex items-center justify-center text-white text-xl font-black shadow-lg shadow-orange-200">
+                  {admin?.username?.[0]?.toUpperCase() || 'A'}
+               </div>
+               <div>
+                  <h3 className="text-xl font-black uppercase text-orange-950 tracking-tighter">Mon Profil</h3>
+                  <p className="text-[10px] text-orange-600 font-bold uppercase tracking-widest mt-1">Administrateur Système</p>
+               </div>
+            </div>
+            <button onClick={onClose} className="p-3 bg-white rounded-2xl shadow-sm hover:bg-slate-50 transition-colors"><X size={20} /></button>
+         </header>
+
+         <div className="p-10 space-y-8">
+            <div className="space-y-6">
+               <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Nom d'utilisateur</span>
+                  <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100 font-bold text-slate-800 flex items-center gap-4">
+                     <User className="text-slate-400" size={18} />
+                     {admin?.username || 'Non renseigné'}
+                  </div>
+               </div>
+
+               <div className="flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">Badge ID</span>
+                  <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100 font-bold text-slate-800 flex items-center gap-4">
+                     <ShieldCheck className="text-slate-400" size={18} />
+                     <code className="text-orange-600">{admin?.badge_id || '••••••••'}</code>
+                  </div>
+               </div>
+            </div>
+
+            <div className="pt-6 border-t space-y-3">
+               <button
+                  onClick={() => {
+                     onLogout();
+                     onClose();
+                  }}
+                  className="w-full flex items-center justify-center gap-3 p-5 rounded-3xl bg-red-50 text-red-600 font-black uppercase text-xs tracking-widest hover:bg-red-600 hover:text-white transition-all active:scale-95 shadow-lg shadow-red-100"
+               >
+                  <LogOut size={18} /> Déconnexion
+               </button>
+               <p className="text-center text-[10px] text-slate-400 font-bold uppercase">Veetaa Control Center v2.0</p>
+            </div>
          </div>
       </div>
    </div>

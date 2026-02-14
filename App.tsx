@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, Suspense, useCallback } from 'react';
-import { View, CategoryID, Store, CartItem, Order, Product, UserProfile, OrderStatus, Language, Driver, Announcement, RIB, SupportInfo } from './types';
+import { View, CategoryID, Store, CartItem, Order, Product, UserProfile, OrderStatus, Language, Driver, Announcement, RIB, SupportInfo, SubCategory } from './types';
 import { CATEGORIES, MOCK_STORES, TRANSLATIONS } from './constants';
 import { supabase } from './lib/supabase';
 import { ShoppingCart, User, ArrowLeft, Heart, MapPin, ChevronDown, ChevronUp, Phone, Bell, ShieldCheck, Loader2 } from 'lucide-react';
@@ -50,6 +50,7 @@ export default function App() {
   const [isAdminLogged, setIsAdminLogged] = useState(false);
 
   const [categories, setCategories] = useState<any[]>([]);
+  const [subCategories, setSubCategories] = useState<SubCategory[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,6 +118,7 @@ export default function App() {
     const dataSubscription = supabase
       .channel('public:data')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'stores' }, () => fetchData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sub_categories' }, () => fetchData())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => fetchData())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchData())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchData())
@@ -131,14 +133,15 @@ export default function App() {
 
   const fetchData = async () => {
     console.log("REFRESHING ALL DATA...");
-    const [catsRes, storesRes, annRes, driversRes, usersRes, settingsRes, productsRes] = await Promise.all([
+    const [catsRes, storesRes, annRes, driversRes, usersRes, settingsRes, productsRes, subCatsRes] = await Promise.all([
       supabase.from('categories').select('*').order('display_order'),
       supabase.from('stores').select('*'),
       supabase.from('announcements').select('*').order('created_at', { ascending: false }),
       supabase.from('drivers').select('*'),
       supabase.from('profiles').select('*'),
       supabase.from('settings').select('*'),
-      supabase.from('products').select('*')
+      supabase.from('products').select('*'),
+      supabase.from('sub_categories').select('*').order('name')
     ]);
 
     if (catsRes.error) console.error("Error fetching categories:", catsRes.error);
@@ -147,8 +150,10 @@ export default function App() {
     if (driversRes.error) console.error("Error fetching drivers:", driversRes.error);
     if (usersRes.error) console.error("Error fetching users:", usersRes.error);
     if (productsRes.error) console.error("Error fetching products:", productsRes.error);
+    if (subCatsRes?.error) console.error("Error fetching sub-categories:", subCatsRes.error);
 
     setCategories(catsRes.data || []);
+    setSubCategories(subCatsRes?.data || []);
     if (driversRes.data) {
       setDrivers(driversRes.data.map((d: any) => ({
         ...d,
@@ -226,35 +231,51 @@ export default function App() {
   };
 
   const fetchOrders = async () => {
-    const { data, error, count } = await supabase.from('orders').select('*, driver_rating', { count: 'exact' }).order('created_at', { ascending: false }).range(0, 9999);
-    if (error) console.error("FETCH ORDERS ERROR:", error);
-    console.log(`FETCHED ORDERS: ${data?.length} (Total in DB: ${count})`);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*, driver_rating')
+        .order('created_at', { ascending: false })
+        .range(0, 299); // Significant reduction to prevent timeouts and payload bloat
 
-    if (data && !error) {
-      const mappedOrders: Order[] = data.map(o => ({
-        id: o.id.toString(),
-        customerName: o.customer_name,
-        phone: o.phone,
-        location: { lat: o.delivery_lat, lng: o.delivery_lng },
-        items: o.items || [],
-        textOrder: o.text_order_notes,
-        prescriptionImage: o.prescription_base64,
-        paymentReceiptImage: o.payment_receipt_base64,
-        prescription_base64: o.prescription_base64,
-        payment_receipt_base64: o.payment_receipt_base64,
-        total: o.total_final,
-        status: o.status,
-        paymentMethod: o.payment_method,
-        timestamp: new Date(o.created_at).getTime(),
-        category: o.category_name || 'Autre',
-        storeName: o.store_name,
-        assignedDriverId: o.assigned_driver_id,
-        statusHistory: o.status_history || [],
-        isArchived: Boolean(o.is_archived),
-        storeRating: o.store_rating ? Number(o.store_rating) : undefined,
-        driverRating: o.driver_rating ? Number(o.driver_rating) : undefined
-      }));
-      setOrders(mappedOrders);
+      if (error) {
+        console.error("FETCH ORDERS ERROR:", error);
+        return;
+      }
+
+      console.log(`FETCHED ORDERS: ${data?.length}`);
+
+      if (data && !error) {
+        const mappedOrders: Order[] = data.map(o => ({
+          id: o.id.toString(),
+          customerName: o.customer_name,
+          phone: o.phone,
+          location: { lat: o.delivery_lat, lng: o.delivery_lng },
+          items: o.items || [],
+          textOrder: o.text_order_notes,
+          deliveryNote: o.delivery_note,
+          prescriptionImage: o.prescription_base64,
+          paymentReceiptImage: o.payment_receipt_base64,
+          prescription_base64: o.prescription_base64,
+          payment_receipt_base64: o.payment_receipt_base64,
+          total: o.total_products || (o.total_final ? o.total_final - 15 : 0),
+          total_products: o.total_products,
+          total_final: o.total_final,
+          status: o.status,
+          paymentMethod: o.payment_method,
+          timestamp: new Date(o.created_at).getTime(),
+          category: o.category_name || 'Autre',
+          storeName: o.store_name,
+          assignedDriverId: o.assigned_driver_id,
+          statusHistory: o.status_history || [],
+          isArchived: Boolean(o.is_archived),
+          storeRating: o.store_rating ? Number(o.store_rating) : undefined,
+          driverRating: o.driver_rating ? Number(o.driver_rating) : undefined
+        }));
+        setOrders(mappedOrders);
+      }
+    } catch (err) {
+      console.error("fetchOrders error:", err);
     }
   };
 
@@ -443,6 +464,7 @@ export default function App() {
         stores={stores}
         announcements={announcements}
         categories={categories}
+        subCategories={subCategories}
         supportNumber={supportNumber}
         onUpdateStatus={handleUpdateOrderStatus}
         onAssignDriver={handleAssignDriver}
